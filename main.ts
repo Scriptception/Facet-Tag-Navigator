@@ -1,7 +1,9 @@
-import { App, Plugin, WorkspaceLeaf } from "obsidian";
+import { App, Plugin, WorkspaceLeaf, Notice } from "obsidian";
 import { FacetNavigatorView, VIEW_TYPE_FACET_NAV } from "./FacetNavigatorView";
 import { TagIndexer } from "./TagIndexer";
 import { FacetNavigatorSettings, SavedView } from "./types";
+import { SavedViewPicker } from "./SavedViewPicker";
+import { InputModal } from "./InputModal";
 
 const DEFAULT_SETTINGS: FacetNavigatorSettings = {
   savedViews: [],
@@ -42,10 +44,60 @@ export default class FacetNavigatorPlugin extends Plugin {
       name: "Open Saved View…",
       callback: async () => {
         const names = this.settings.savedViews.map(v => v.name);
-        const name = await this.quickPrompt("Saved view name:", names.join(", "));
-        const view = this.settings.savedViews.find(v => v.name === name);
-        if (!view) return this.activateView();
-        await this.activateView(view.tags);
+        if (!names.length) {
+          new Notice("No saved views yet.");
+          return this.activateView();
+        }
+        
+        new SavedViewPicker(this.app, names, async (name) => {
+          const sv = this.settings.savedViews.find(v => v.name === name);
+          if (!sv) return;
+          await this.activateView(sv.tags);
+        }, (name) => {
+          // Delete handler
+          const index = this.settings.savedViews.findIndex(v => v.name === name);
+          if (index !== -1) {
+            this.settings.savedViews.splice(index, 1);
+            this.saveSettings();
+            new Notice(`Deleted saved view: ${name}`);
+            // Return true to indicate successful deletion
+            return true;
+          }
+          return false;
+        }).open();
+      }
+    });
+
+    // Manage saved views
+    this.addCommand({
+      id: "facet-navigator-manage-saved",
+      name: "Manage Saved Views…",
+      callback: async () => {
+        if (this.settings.savedViews.length === 0) {
+          new Notice("No saved views to manage.");
+          return;
+        }
+        
+        new SavedViewPicker(this.app, this.settings.savedViews.map(v => v.name), 
+          async (name) => {
+            // Open the view
+            const sv = this.settings.savedViews.find(v => v.name === name);
+            if (!sv) return;
+            await this.activateView(sv.tags);
+          }, 
+          (name) => {
+            // Delete handler
+            const index = this.settings.savedViews.findIndex(v => v.name === name);
+            if (index !== -1) {
+              this.settings.savedViews.splice(index, 1);
+              this.saveSettings();
+              new Notice(`Deleted saved view: ${name}`);
+              // Return true to indicate successful deletion
+              return true;
+            }
+            return false;
+          }
+        ).open();
       }
     });
   }
@@ -72,8 +124,22 @@ export default class FacetNavigatorPlugin extends Plugin {
     this.app.workspace.revealLeaf(leaf);
 
     if (initialTags?.length) {
-      const view = leaf.view as FacetNavigatorView;
-      for (const t of initialTags) view.addFacet(t);
+      console.log(`About to load initial tags:`, initialTags);
+      
+      // Wait a bit for the view to be fully initialized
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+      const view = leaf.view as FacetNavigatorView & { setFacets?: (tags: string[]) => void };
+      if (view?.setFacets) {
+        console.log(`Setting facets to:`, initialTags);
+        view.setFacets(initialTags);
+      } else if (view?.addFacet) {
+        // Fallback: clear then add
+        try { (view as any).clearAll?.(); } catch {}
+        for (const t of initialTags) view.addFacet(t);
+      } else {
+        console.error('View not ready to accept facets');
+      }
     }
   }
 
@@ -86,32 +152,93 @@ export default class FacetNavigatorPlugin extends Plugin {
     await this.saveData(this.settings);
   }
 
+
+
   private async quickPrompt(label: string, hint?: string): Promise<string | null> {
     return new Promise((resolve) => {
       const modal = document.createElement("div");
-      modal.style.position = "fixed"; modal.style.inset = "0";
+      modal.style.position = "fixed";
+      modal.style.inset = "0";
       modal.style.background = "rgba(0,0,0,.3)";
-      modal.style.display = "grid"; modal.style.placeItems = "center";
+      modal.style.display = "grid";
+      modal.style.placeItems = "center";
+      modal.style.zIndex = "1000";
+
       const card = document.createElement("div");
       card.style.background = "var(--background-primary)";
       card.style.padding = "1rem";
       card.style.borderRadius = "8px";
-      card.style.minWidth = "340px";
-      const l = document.createElement("div");
-      l.textContent = label; l.style.marginBottom = ".5rem";
-      const i = document.createElement("input");
-      i.type = "text"; i.placeholder = hint || "";
-      const row = document.createElement("div");
-      row.style.display = "flex"; row.style.justifyContent = "flex-end"; row.style.gap = ".5rem"; row.style.marginTop = ".75rem";
-      const ok = document.createElement("button"); ok.textContent = "OK";
-      const cancel = document.createElement("button"); cancel.textContent = "Cancel";
-      row.append(cancel, ok);
-      card.append(l, i, row);
+      card.style.minWidth = "400px";
+      card.style.border = "1px solid var(--background-modifier-border)";
+
+      const title = document.createElement("div");
+      title.textContent = label;
+      title.style.marginBottom = ".5rem";
+      title.style.fontWeight = "bold";
+
+      const input = document.createElement("input");
+      input.type = "text";
+      input.placeholder = hint || "Type to search...";
+      input.style.width = "100%";
+      input.style.padding = ".5rem";
+      input.style.marginBottom = ".75rem";
+      input.style.border = "1px solid var(--background-modifier-border)";
+      input.style.borderRadius = "4px";
+      input.style.background = "var(--background-primary)";
+      input.style.color = "var(--text-normal)";
+
+      const buttonRow = document.createElement("div");
+      buttonRow.style.display = "flex";
+      buttonRow.style.justifyContent = "flex-end";
+      buttonRow.style.gap = ".5rem";
+
+      const cancelBtn = document.createElement("button");
+      cancelBtn.textContent = "Cancel";
+      cancelBtn.style.padding = ".5rem 1rem";
+      cancelBtn.style.border = "1px solid var(--background-modifier-border)";
+      cancelBtn.style.borderRadius = "4px";
+      cancelBtn.style.background = "var(--background-secondary)";
+      cancelBtn.style.color = "var(--text-normal)";
+
+      const okBtn = document.createElement("button");
+      okBtn.textContent = "OK";
+      okBtn.style.padding = ".5rem 1rem";
+      okBtn.style.borderRadius = "4px";
+      okBtn.style.background = "var(--interactive-accent)";
+      okBtn.style.color = "var(--text-on-accent)";
+      okBtn.style.border = "none";
+
+      buttonRow.append(cancelBtn, okBtn);
+      card.append(title, input, buttonRow);
       modal.append(card);
       document.body.append(modal);
-      i.focus();
-      cancel.onclick = () => { modal.remove(); resolve(null); };
-      ok.onclick = () => { const v = i.value?.trim(); modal.remove(); resolve(v || null); };
+
+      input.focus();
+
+      const cleanup = () => {
+        modal.remove();
+      };
+
+      cancelBtn.onclick = cleanup;
+      okBtn.onclick = () => {
+        const value = input.value.trim();
+        if (!value) {
+          new Notice("Please enter a value.");
+          return;
+        }
+        cleanup();
+        resolve(value);
+      };
+
+      // Handle Enter key
+      input.onkeydown = (e) => {
+        if (e.key === "Enter") {
+          okBtn.click();
+        } else if (e.key === "Escape") {
+          cleanup();
+          resolve(null);
+        }
+      };
     });
   }
 }
