@@ -1,9 +1,10 @@
-import { App, CachedMetadata, MetadataCache, TFile, debounce } from "obsidian";
+import { App, CachedMetadata, MetadataCache, TFile, debounce, Plugin } from "obsidian";
 import { FileId } from "./types";
 import { normalize } from "./utils";
 
 export class TagIndexer {
   private app: App;
+  private plugin: Plugin;
   private delimiter = "/";
   private ready = false;
 
@@ -12,7 +13,10 @@ export class TagIndexer {
   private tagToFiles = new Map<string, Set<FileId>>();
   private fileToExactTags = new Map<FileId, Set<string>>();
 
-  constructor(app: App) { this.app = app; }
+  constructor(app: App, plugin: Plugin) { 
+    this.app = app; 
+    this.plugin = plugin;
+  }
 
   isReady() { return this.ready; }
 
@@ -25,25 +29,38 @@ export class TagIndexer {
   }
 
   attachWatchers(onReady: () => void) {
-    const mc = this.app.metadataCache;
+    const { metadataCache: mc, vault } = this.app;
     const safeRebuild = debounce(async () => { await this.rebuild(); onReady(); }, 250, true);
 
     // Initial resolution
-    // @ts-ignore
-    this.app.plugins.getPlugin("facet-tag-navigator")?.registerEvent?.(mc.on("resolved", safeRebuild));
+    this.plugin.registerEvent(mc.on("resolved", safeRebuild));
 
     // File changed
-    this.app.plugins.getPlugin("facet-tag-navigator")?.registerEvent?.(mc.on("changed", (file: any) => {
+    this.plugin.registerEvent(mc.on("changed", (file) => {
       if (!(file instanceof TFile) || file.extension !== "md") return;
       this.indexFile(file);
       onReady();
     }));
 
     // File deleted
-    // @ts-ignore
-    this.app.plugins.getPlugin("facet-tag-navigator")?.registerEvent?.(mc.on("deleted", (file) => {
-      if (!(file instanceof TFile) || file.extension !== "md") return;
-      this.removeFile(file.path);
+    this.plugin.registerEvent(vault.on("delete", (f) => {
+      if (!(f instanceof TFile) || f.extension !== "md") return;
+      this.removeFile(f.path);
+      onReady();
+    }));
+
+    // File created
+    this.plugin.registerEvent(vault.on("create", (f) => {
+      if (!(f instanceof TFile) || f.extension !== "md") return;
+      this.indexFile(f);
+      onReady();
+    }));
+
+    // File renamed
+    this.plugin.registerEvent(vault.on("rename", (f, oldPath) => {
+      if (!(f instanceof TFile) || f.extension !== "md") return;
+      this.removeFile(oldPath);
+      this.indexFile(f);
       onReady();
     }));
   }

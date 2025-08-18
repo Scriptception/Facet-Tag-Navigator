@@ -24,7 +24,7 @@ export default class FacetNavigatorPlugin extends Plugin {
   async onload() {
     await this.loadSettings();
 
-    this.indexer = new TagIndexer(this.app);
+    this.indexer = new TagIndexer(this.app, this);
     await this.indexer.rebuild();
     this.indexer.attachWatchers(() => {
       // rerender active views when index updates
@@ -132,14 +132,11 @@ export default class FacetNavigatorPlugin extends Plugin {
     this.app.workspace.revealLeaf(leaf);
 
     if (initialTags?.length) {
-      console.log(`About to load initial tags:`, initialTags);
-      
       // Wait a bit for the view to be fully initialized
       await new Promise(resolve => setTimeout(resolve, 100));
       
       const view = leaf.view as FacetNavigatorView & { setFacets?: (tags: string[]) => void };
       if (view?.setFacets) {
-        console.log(`Setting facets to:`, initialTags);
         view.setFacets(initialTags);
       } else if (view?.addFacet) {
         // Fallback: clear then add
