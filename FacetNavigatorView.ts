@@ -38,9 +38,11 @@ export class FacetNavigatorView extends ItemView {
   async onOpen() {
     this.rootEl = this.containerEl.createDiv({ cls: "facet-nav" });
 
+    const scroll = this.rootEl.createDiv({ cls: "facet-scroll" });
+
     // Bar = chips + controls
-    this.barEl = this.rootEl.createDiv({ cls: "facet-bar" });
-    this.controlsEl = this.rootEl.createDiv({ cls: "facet-controls" });
+    this.barEl = scroll.createDiv({ cls: "facet-bar" });
+    this.controlsEl = scroll.createDiv({ cls: "facet-controls" });
 
     // Controls: Save View / Export / Clear
     const btnSave = this.controlsEl.createEl("button", { text: "Save View" });
@@ -50,8 +52,16 @@ export class FacetNavigatorView extends ItemView {
     const btnClear = this.controlsEl.createEl("button", { text: "Clear" });
     btnClear.addEventListener("click", () => this.clearAll());
 
+    // Mobile-only filters toggle
+    const btnFilters = this.controlsEl.createEl("button", { text: "Filters", cls: "mobile-only" });
+    btnFilters.setAttr("aria-expanded", "true");
+    btnFilters.addEventListener("click", () => {
+      const hidden = this.coTagsEl.classList.toggle("is-hidden");
+      btnFilters.setAttr("aria-expanded", (!hidden).toString());
+    });
+
     // Search box above everything
-    this.searchEl = this.rootEl.createDiv({ cls: "search-section" });
+    this.searchEl = scroll.createDiv({ cls: "search-section search-row" });
     const searchContainer = this.searchEl.createDiv({ cls: "search-container" });
     this.searchInput = searchContainer.createEl("input", { 
       type: "text", 
@@ -67,7 +77,7 @@ export class FacetNavigatorView extends ItemView {
     });
 
     // Main: left co-tags, right results
-    const main = this.rootEl.createDiv({ cls: "facet-main" });
+    const main = scroll.createDiv({ cls: "facet-main" });
     
     this.coTagsEl = main.createDiv({ cls: "co-tags" });
     this.resultsEl = main.createDiv({ cls: "results" });

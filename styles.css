@@ -1,11 +1,61 @@
-.facet-nav { height: 100%; display: flex; flex-direction: column; gap: .5rem; padding: .75rem; }
+/* ============= Root & layout ============= */
+/* Root must NOT be a grid—using flex prevents empty grid tracks on desktop */
+.facet-nav {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  padding: .75rem;
+  min-height: 0;
+  box-sizing: border-box;
+}
+
+/* Local scroll context that holds bars + search + main columns */
+.facet-scroll {
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto auto auto 1fr; /* bar / controls / search / content */
+  gap: .4rem;
+  overflow: auto;        /* only scroller we rely on */
+  min-height: 0;
+}
+
+/* Two columns on desktop */
+.facet-main {
+  display: grid;
+  grid-template-columns: 300px 1fr;
+  gap: .6rem;
+  min-height: 0;
+}
+
+/* Left (filters) / Right (results) panes scroll independently */
+.co-tags { 
+  border-right: 1px solid var(--background-modifier-border); 
+  padding-right: .5rem; 
+  overflow: auto; 
+  min-height: 0; 
+}
+.results { overflow: auto; min-height: 0; }
+
+/* ============= Controls, chips, search ============= */
+.facet-bar, .search-row { align-items: center; }
 .facet-bar { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
-.facet-chip { display: inline-flex; align-items: center; gap: .4rem; padding: .2rem .5rem; border-radius: 999px; background: var(--background-secondary-alt); }
+.facet-controls { display:flex; gap:.5rem; align-items:center; }
+
+.facet-chip { 
+  display: inline-flex; 
+  align-items: center; 
+  gap: .4rem; 
+  padding: .2rem .5rem; 
+  border-radius: 999px; 
+  background: var(--background-secondary-alt);
+  max-width: 100%;
+}
+.facet-chip > span:first-child { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .facet-chip .remove { cursor: pointer; opacity: .7; }
 .facet-chip .mode-indicator { font-size: .8rem; opacity: .6; }
 .facet-chip.excluded { background: var(--background-modifier-error); color: var(--text-on-accent); }
-.facet-controls { display:flex; gap:.5rem; align-items:center; }
-.facet-main { display: flex; gap: .75rem; height: calc(100vh - 200px); position: relative; }
+
 .search-section { margin-bottom: .5rem; width: 100%; }
 .search-container { display: flex; align-items: center; }
 .search-input { 
@@ -16,31 +66,37 @@
   background: var(--background-primary);
   color: var(--text-normal);
   font-size: .9rem;
+  box-sizing: border-box;
 }
 .search-input:focus { 
   outline: none; 
   border-color: var(--interactive-accent);
   box-shadow: 0 0 0 2px var(--interactive-accent-hover);
 }
-.co-tags { width: 280px; border-right: 1px solid var(--background-modifier-border); padding-right: .5rem; overflow: auto; flex-shrink: 0; }
-.co-tags .group { margin-bottom:.75rem; }
-.co-tags .group h4 { margin: .25rem 0; font-size: .9rem; opacity:.8; }
+
+/* ============= Co-tags ============= */
+.co-tags .group { margin-bottom:.5rem; }
+.co-tags .group h4 { margin: .15rem 0; font-size: .9rem; opacity:.8; }
+
 .co-tags .tag-row { 
   display:flex; 
   justify-content:space-between; 
   align-items: center;
-  gap:.5rem; 
-  padding:.1rem .25rem; 
+  gap:.4rem; 
+  padding:.08rem .2rem; 
   border-radius:6px; 
   cursor:pointer; 
   position: relative;
+  min-height: 36px;           /* slightly reduced but still good tap target */
 }
 .co-tags .tag-row:hover { background: var(--background-secondary); }
 .co-tags .tag-row .badge { margin-left: auto; }
-.results { flex: 1; overflow: auto; min-width: 0; }
+
+/* ============= Results list ============= */
 .result-item { padding:.35rem .4rem; border-radius:6px; }
 .result-item:hover { background: var(--background-secondary); }
 .result-meta { font-size:.8rem; opacity:.7; }
+
 .result-item .file-tags { margin-top: .25rem; display: flex; flex-wrap: wrap; gap: .2rem; }
 .result-item .file-tag { 
   font-size: .75rem; 
@@ -57,6 +113,8 @@
   font-style: italic; 
   padding: .1rem .3rem;
 }
+
+/* Load-more button */
 .load-more-btn { 
   margin: .5rem 0; 
   padding: .4rem .8rem; 
@@ -68,16 +126,17 @@
   font-size: .9rem;
 }
 .load-more-btn:hover { background: var(--interactive-accent-hover); }
+
+/* Misc */
 .badge { font-size:.75rem; opacity:.8; padding:.05rem .35rem; border-radius:999px; background: var(--background-modifier-form-field); }
 .muted { opacity:.7; }
 
-/* Modal styles */
+/* ============= Saved View modal/list ============= */
 .facet-input-modal { display:grid; gap:.5rem; min-width:320px; }
 .facet-input-label { font-size:.9rem; opacity:.8; }
 .facet-input-field { width:100%; }
 .facet-input-actions { display:flex; gap:.5rem; justify-content:flex-end; }
 
-/* Saved view picker styles */
 .facet-sv-suggestion { 
   padding:.25rem .35rem; 
   display: flex; 
@@ -100,3 +159,47 @@
 }
 .facet-sv-delete:hover { opacity: 1; }
 
+/* ============= Mobile (≤ 700px) ============= */
+@media (max-width: 700px) {
+  .facet-main { grid-template-columns: 1fr; }
+  .co-tags { border-right: 0; border-bottom: 1px solid var(--background-modifier-border); padding-right: 0; padding-bottom: .5rem; max-height: 40vh; }
+  .results { max-height: none; }
+
+  .facet-controls { flex-wrap: wrap; gap: .5rem; }
+  .mobile-only { display: inline-flex; }
+  .co-tags.is-hidden { display: none; }
+
+  .co-tags .tag-row { padding: .35rem .5rem; }
+  .result-item { padding: .5rem .6rem; }
+
+  /* Mobile-only sticky for chips/search */
+  .facet-bar, .search-row {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: var(--background-primary);
+    padding-top: .25rem;
+    padding-bottom: .25rem;
+  }
+}
+
+/* Hide the mobile-only toggle on desktop */
+@media (min-width: 701px) {
+  .mobile-only { display: none; }
+}
+
+/* Kill the empty Obsidian .view-content for this custom view */
+.workspace-leaf-content[data-type="facet-navigator-view"] > .view-content {
+  display: none !important;
+}
+
+/* Make the plugin root take the remaining height under the header */
+.workspace-leaf-content[data-type="facet-navigator-view"] {
+  display: flex;
+  flex-direction: column;
+}
+
+.workspace-leaf-content[data-type="facet-navigator-view"] > .facet-nav {
+  flex: 1 1 auto;
+  min-height: 0;
+}
