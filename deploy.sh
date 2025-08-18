@@ -13,7 +13,7 @@ if [ $# -eq 0 ]; then
 fi
 
 VAULT_PATH="$1"
-PLUGIN_NAME="Facet-Tag-Navigator"
+PLUGIN_NAME="facet-tag-navigator"
 PLUGIN_DIR="$VAULT_PATH/.obsidian/plugins/$PLUGIN_NAME"
 
 # Check if vault path exists

@@ -1,7 +1,7 @@
 import { App, ItemView, Notice, TFile, WorkspaceLeaf } from "obsidian";
 import { TagIndexer } from "./TagIndexer";
 import { FacetNavigatorSettings, SavedView } from "./types";
-import { firstSegment, normalize, sortedByCountDesc, buildTagTree, sortNodes, TagTreeNode } from "./utils";
+import { buildTagTree, sortNodes, TagTreeNode } from "./utils";
 import { InputModal } from "./InputModal";
 
 export const VIEW_TYPE_FACET_NAV = "facet-navigator-view";
@@ -10,9 +10,11 @@ export class FacetNavigatorView extends ItemView {
   private indexer: TagIndexer;
   private settings: FacetNavigatorSettings;
 
-  private selected = new Set<string>();    // current facets (AND)
+  // Facet selection: Map<tag, "exact"|"descendants"> for exact vs nested mode
+  private selected = new Map<string, "exact" | "descendants">();
+  private excluded = new Set<string>(); // NOT facets
   private currentFiles = new Set<string>(); // result set
-  private searchQuery = "";                // current search filter
+  private searchQuery = ""; // current search filter
 
   // UI roots
   private rootEl!: HTMLElement;
@@ -25,7 +27,6 @@ export class FacetNavigatorView extends ItemView {
 
   constructor(leaf: WorkspaceLeaf, app: App, indexer: TagIndexer, settings: FacetNavigatorSettings) {
     super(leaf);
-    this.app = app;
     this.indexer = indexer;
     this.settings = settings;
   }
@@ -80,39 +81,71 @@ export class FacetNavigatorView extends ItemView {
   /** External: reset selection */
   clearAll() {
     this.selected.clear();
-    this.searchQuery = ""; // Clear search query when clearing all facets
-    this.searchInput.value = ""; // Clear search input field
+    this.excluded.clear();
+    this.searchQuery = "";
+    if (this.searchInput) this.searchInput.value = "";
     this.refresh();
   }
 
-  /** Add a facet */
+  /** Add a facet with default mode based on settings */
   addFacet(tag: string) {
-    console.log(`addFacet called with tag: ${tag}`);
-    const n = normalize(tag);
-    console.log(`Normalized tag: ${n}`);
-    if (!n) {
-      console.log(`Tag normalization failed for: ${tag}`);
-      return;
-    }
-    this.selected.add(n);
-    console.log(`Added tag to selected set. Current selected:`, Array.from(this.selected));
+    const n = tag.toLowerCase();
+    if (!n) return;
+    
+    const mode = this.settings.includeDescendantsByDefault ? "descendants" : "exact";
+    this.selected.set(n, mode);
     this.refresh();
-    console.log(`Refresh called`);
+  }
+
+  /** Add a facet in exact mode */
+  addFacetExact(tag: string) {
+    const n = tag.toLowerCase();
+    if (!n) return;
+    
+    this.selected.set(n, "exact");
+    this.refresh();
   }
 
   /** Remove a facet */
   removeFacet(tag: string) {
-    const n = normalize(tag);
+    const n = tag.toLowerCase();
     this.selected.delete(n);
+    this.refresh();
+  }
+
+  /** Toggle between exact and descendants mode for a facet */
+  toggleFacetMode(tag: string) {
+    const n = tag.toLowerCase();
+    const current = this.selected.get(n);
+    if (!current) return;
+    
+    const newMode = current === "exact" ? "descendants" : "exact";
+    this.selected.set(n, newMode);
+    this.refresh();
+  }
+
+  /** Add/remove from excluded set */
+  toggleExcluded(tag: string) {
+    const n = tag.toLowerCase();
+    if (this.excluded.has(n)) {
+      this.excluded.delete(n);
+    } else {
+      this.excluded.add(n);
+    }
     this.refresh();
   }
 
   /** Replace current facets with the provided list and refresh once */
   setFacets(tags: string[]) {
-    const normalized = tags
-      .map(t => normalize(t))
-      .filter((t): t is string => Boolean(t));
-    this.selected = new Set(normalized);
+    const normalized = tags.map(t => t.toLowerCase()).filter(Boolean);
+    this.selected.clear();
+    this.excluded.clear();
+    
+    for (const tag of normalized) {
+      const mode = this.settings.includeDescendantsByDefault ? "descendants" : "exact";
+      this.selected.set(tag, mode);
+    }
+    
     // Reset any search filter and input UI
     this.searchQuery = "";
     if (this.searchInput) this.searchInput.value = "";
@@ -128,15 +161,36 @@ export class FacetNavigatorView extends ItemView {
 
     // Compute result set from selected facets
     if (this.selected.size === 0) {
-      // If nothing selected: show union of all files with any tag, so we can surface global co-tags.
-      const allFiles = new Set<string>();
-      for (const tag of this.indexer.allTags()) {
-        const set = this.indexer.filesWithAll([tag]);
-        for (const f of set) allFiles.add(f);
+      if (this.settings.startEmpty) {
+        // Show no results, just co-tag panel derived from allTags()
+        this.currentFiles = new Set();
+      } else {
+        // Legacy behavior: show union of all files with any tag
+        const allFiles = new Set<string>();
+        for (const tag of this.indexer.allTags()) {
+          const set = this.indexer.filesWithAll([tag], new Set());
+          for (const f of set) allFiles.add(f);
+        }
+        this.currentFiles = allFiles;
       }
-      this.currentFiles = allFiles;
     } else {
-      this.currentFiles = this.indexer.filesWithAll(Array.from(this.selected));
+      // Get included files
+      const includedTags = Array.from(this.selected.keys());
+      const exactTags = new Set(
+        Array.from(this.selected.entries())
+          .filter(([_, mode]) => mode === "exact")
+          .map(([tag, _]) => tag)
+      );
+      
+      this.currentFiles = this.indexer.filesWithAll(includedTags, exactTags);
+      
+      // Subtract excluded files
+      if (this.excluded.size > 0) {
+        const excludedFiles = this.indexer.filesWithAll(Array.from(this.excluded), new Set());
+        for (const fileId of excludedFiles) {
+          this.currentFiles.delete(fileId);
+        }
+      }
     }
 
     this.renderBar();
@@ -147,31 +201,61 @@ export class FacetNavigatorView extends ItemView {
   private renderBar() {
     this.barEl.empty();
 
-    if (this.selected.size === 0) {
-      const hint = this.barEl.createSpan({ text: "Select a tag from the left to start drilling down.", cls: "muted" });
+    if (this.selected.size === 0 && this.excluded.size === 0) {
+      const hint = this.barEl.createSpan({ 
+        text: "Select a tag from the left to start drilling down.", 
+        cls: "muted" 
+      });
       hint.style.marginRight = "auto";
+      return;
     }
 
-    for (const t of this.selected) {
+    // Render included facets
+    for (const [tag, mode] of this.selected) {
       const chip = this.barEl.createDiv({ cls: "facet-chip" });
-      chip.createSpan({ text: t });
+      const label = chip.createSpan({ text: tag });
+      const modeIndicator = chip.createSpan({ 
+        text: mode === "exact" ? " (exact)" : " (nested)", 
+        cls: "mode-indicator" 
+      });
       const x = chip.createSpan({ text: "✕", cls: "remove" });
-      x.addEventListener("click", () => this.removeFacet(t));
+      
+      // Right-click to toggle mode
+      chip.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        this.toggleFacetMode(tag);
+      });
+      
+      // Click to remove
+      x.addEventListener("click", () => this.removeFacet(tag));
+      
+      // Tooltip
+      chip.setAttr("title", `Right-click to toggle ${mode === "exact" ? "nested" : "exact"} mode`);
+    }
+
+    // Render excluded facets
+    for (const tag of this.excluded) {
+      const chip = this.barEl.createDiv({ cls: "facet-chip excluded" });
+      chip.createSpan({ text: `NOT ${tag}` });
+      const x = chip.createSpan({ text: "✕", cls: "remove" });
+      x.addEventListener("click", () => this.toggleExcluded(tag));
+      chip.setAttr("title", "Excluded facet - click to remove");
     }
   }
 
   private renderCoTags() {
     this.coTagsEl.empty();
 
-    // 1) Build frequency map excluding selected facets
-    const exclude = new Set(this.selected.keys());
+    // Build frequency map excluding selected and excluded facets
+    const exclude = new Set([...this.selected.keys(), ...this.excluded]);
     const coFreq = this.indexer.coTagFrequencies(this.currentFiles, exclude);
+    
     if (coFreq.size === 0) {
       this.coTagsEl.createDiv({ text: "No co-tags. Adjust selection.", cls: "muted" });
       return;
     }
 
-    // 2) Filter by search query if present
+    // Filter by search query if present
     let filteredFreq = coFreq;
     if (this.searchQuery) {
       filteredFreq = new Map();
@@ -186,36 +270,46 @@ export class FacetNavigatorView extends ItemView {
       }
     }
 
-    // 3) Build a full tree from current co-tags
+    // Build hierarchical tree
     const treeRoots = buildTagTree(filteredFreq, "/");
 
-    // 4) Group by the first segment (namespace), preserving your existing structure
-    const groupKeys = Array.from(treeRoots.keys()).sort((a, b) => a.localeCompare(b));
-
-    for (const ns of groupKeys) {
-      const nsNode = treeRoots.get(ns)!;
-
-      const section = this.coTagsEl.createDiv({ cls: "group" });
-      section.createEl("h4", { text: ns });
-
-      // Render children of the namespace as the first visible level:
-      const children = sortNodes(nsNode.children.values(), "count");
+    if (this.settings.showNamespaceHeaders) {
+      // Group by namespace
+      const groupKeys = Array.from(treeRoots.keys()).sort((a, b) => a.localeCompare(b));
+      
+      for (const ns of groupKeys) {
+        const nsNode = treeRoots.get(ns)!;
+        const section = this.coTagsEl.createDiv({ cls: "group" });
+        section.createEl("h4", { text: ns });
+        
+        // Render children of the namespace
+        const children = sortNodes(nsNode.children.values(), this.settings.coTagSort);
+        const expandDefault = Boolean(this.searchQuery);
+        for (const child of children) {
+          this.renderTreeNode(section, child, 0, expandDefault);
+        }
+      }
+    } else {
+      // Flat list
+      const allNodes = Array.from(treeRoots.values());
+      const sortedNodes = sortNodes(allNodes, this.settings.coTagSort);
       const expandDefault = Boolean(this.searchQuery);
-      for (const child of children) {
-        this.renderTreeNode(section, child, 0, expandDefault);
+      
+      for (const node of sortedNodes) {
+        this.renderTreeNode(this.coTagsEl, node, 0, expandDefault);
       }
     }
   }
 
   /**
    * Render a TagTreeNode (and its descendants) as clickable rows.
-   * Clicking any node adds that node.full as a facet (parent matches descendants via roll-up index).
+   * Clicking any node adds that node.full as a facet.
    */
   private renderTreeNode(container: HTMLElement, node: TagTreeNode, depth: number, expandDefault: boolean) {
     const row = container.createDiv({ cls: "tag-row" });
     row.style.paddingLeft = `${depth * 14}px`;
 
-    // Optional: disclosure affordance if the node has children
+    // Disclosure affordance if the node has children
     const hasKids = node.children.size > 0;
     const caret = hasKids ? row.createSpan({ text: "▸ " }) : row.createSpan({ text: "  " });
     caret.style.opacity = hasKids ? "0.8" : "0";
@@ -223,19 +317,20 @@ export class FacetNavigatorView extends ItemView {
     const label = row.createSpan({ text: node.label });
     const badge = row.createSpan({ text: String(node.count), cls: "badge" });
 
-    // Tooltip shows the full tag path; clarify if the node has no exact matches
+    // Tooltip shows the full tag path and mode info
     const exactNote = node.exactCount === 0 ? " (no exact tags; rolled-up)" : "";
-    label.setAttr("title", `${node.full}${exactNote}`);
+    label.setAttr("title", `${node.full}${exactNote}\nClick to add facet\nRight-click to toggle exact/nested mode\nAlt+click to exclude`);
 
     // Handle expand/collapse first
     let expanded = expandDefault;
     let childWrap: HTMLElement | null = null;
+    
     if (hasKids) {
-      childWrap = container.createDiv(); // created regardless; we toggle display
+      childWrap = container.createDiv();
       childWrap.style.display = expanded ? "" : "none";
 
-      // Render children (initially collapsed)
-      const kids = sortNodes(node.children.values(), "count");
+      // Render children
+      const kids = sortNodes(node.children.values(), this.settings.coTagSort);
       for (const kid of kids) {
         this.renderTreeNode(childWrap, kid, depth + 1, expandDefault);
       }
@@ -278,6 +373,21 @@ export class FacetNavigatorView extends ItemView {
         this.addFacet(node.full);
       });
     }
+
+    // Right-click to toggle exact/nested mode
+    row.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.toggleFacetMode(node.full);
+    });
+
+    // Alt+click to exclude
+    row.addEventListener("auxclick", (e) => {
+      if (e.button === 1) { // middle click
+        e.preventDefault();
+        this.toggleExcluded(node.full);
+      }
+    });
   }
 
   private renderResults() {
@@ -288,32 +398,82 @@ export class FacetNavigatorView extends ItemView {
     head.createEl("h4", { text: `Results (${total})` });
 
     if (total === 0) {
-      this.resultsEl.createDiv({ text: "No notes match the current facets.", cls: "muted" });
+      if (this.selected.size === 0 && this.settings.startEmpty) {
+        this.resultsEl.createDiv({ 
+          text: "Select a tag to start browsing. Use the left panel to explore available tags.", 
+          cls: "muted" 
+        });
+      } else {
+        this.resultsEl.createDiv({ text: "No notes match the current facets.", cls: "muted" });
+      }
       return;
     }
 
-    // Render items
+    // Virtualize results
     const files = Array.from(this.currentFiles)
       .map(p => this.app.vault.getAbstractFileByPath(p))
       .filter((f): f is TFile => f instanceof TFile)
       .sort((a, b) => a.basename.localeCompare(b.basename));
 
-    for (const f of files) {
-      const item = this.resultsEl.createDiv({ cls: "result-item" });
-      const link = item.createEl("a", { text: f.basename, href: "#" });
-      link.addEventListener("click", (e) => {
-        e.preventDefault();
-        this.app.workspace.getLeaf(true).openFile(f);
-      });
+    const pageSize = this.settings.resultsPageSize;
+    let rendered = 0;
 
-      const meta = item.createDiv({ cls: "result-meta" });
-      meta.setText(`${f.path}`);
+    const renderMore = () => {
+      const end = Math.min(rendered + pageSize, files.length);
+      for (let i = rendered; i < end; i++) {
+        this.renderResultItem(list, files[i]);
+      }
+      rendered = end;
+    };
+
+    const list = this.resultsEl.createDiv();
+    renderMore();
+
+    if (rendered < files.length) {
+      const more = this.resultsEl.createEl("button", { 
+        text: `Load more (${files.length - rendered})`,
+        cls: "load-more-btn"
+      });
+      more.onclick = () => { 
+        more.remove(); 
+        renderMore(); 
+        if (rendered < files.length) {
+          this.resultsEl.append(more);
+        }
+      };
+    }
+  }
+
+  private renderResultItem(container: HTMLElement, file: TFile) {
+    const item = container.createDiv({ cls: "result-item" });
+    
+    const link = item.createEl("a", { text: file.basename, href: "#" });
+    link.addEventListener("click", (e) => {
+      e.preventDefault();
+      this.app.workspace.getLeaf(true).openFile(file);
+    });
+
+    const meta = item.createDiv({ cls: "result-meta" });
+    meta.setText(`${file.path}`);
+
+    // Show tags for this file
+    const fileTags = this.indexer.exactTagsForFile(file.path);
+    if (fileTags.size > 0) {
+      const tagsContainer = item.createDiv({ cls: "file-tags" });
+      for (const tag of Array.from(fileTags).slice(0, 5)) { // Limit to 5 tags
+        const tagChip = tagsContainer.createSpan({ text: tag, cls: "file-tag" });
+        tagChip.addEventListener("click", () => this.addFacet(tag));
+        tagChip.setAttr("title", `Click to add ${tag} as a facet`);
+      }
+      if (fileTags.size > 5) {
+        tagsContainer.createSpan({ text: `+${fileTags.size - 5} more`, cls: "more-tags" });
+      }
     }
   }
 
   /** Persist current selection as a Saved View */
   private saveView() {
-    const tags = Array.from(this.selected);
+    const tags = Array.from(this.selected.keys());
     if (tags.length === 0) { 
       new Notice("Select at least one tag."); 
       return; 
@@ -323,13 +483,21 @@ export class FacetNavigatorView extends ItemView {
     
     new InputModal(this.app, "Saved view name", suggested, (name) => {
       const existing = this.settings.savedViews.find(v => v.name === name);
-      if (existing) existing.tags = tags;
-      else this.settings.savedViews.push({ name, tags });
+      if (existing) {
+        existing.tags = tags;
+        if (this.excluded.size > 0) {
+          existing.exclude = Array.from(this.excluded);
+        }
+      } else {
+        const newView: SavedView = { 
+          name, 
+          tags,
+          exclude: this.excluded.size > 0 ? Array.from(this.excluded) : undefined
+        };
+        this.settings.savedViews.push(newView);
+      }
 
-      console.log(`Saving view "${name}" with tags:`, tags);
-      console.log(`Current saved views:`, this.settings.savedViews);
-
-      // Persist settings via the owning plugin (id must match manifest.json)
+      // Persist settings via the owning plugin
       // @ts-ignore
       this.app.plugins.getPlugin("facet-tag-navigator")?.saveSettings?.();
       new Notice(`Saved view: ${name}`);
@@ -338,8 +506,16 @@ export class FacetNavigatorView extends ItemView {
 
   /** Generate a core search query */
   private exportQuery() {
-    if (this.selected.size === 0) { new Notice("No facets selected."); return; }
-    const q = Array.from(this.selected).map(t => `tag:#${t}`).join(" ");
+    if (this.selected.size === 0) { 
+      new Notice("No facets selected."); 
+      return; 
+    }
+    
+    const included = Array.from(this.selected.entries())
+      .map(([tag, mode]) => mode === "exact" ? `tag:#${tag}` : `tag:#${tag}*`);
+    const excluded = Array.from(this.excluded).map(tag => `-tag:#${tag}`);
+    
+    const q = [...included, ...excluded].join(" ");
     navigator.clipboard.writeText(q).catch(() => {/* ignore */});
     new Notice("Copied search query to clipboard.");
   }

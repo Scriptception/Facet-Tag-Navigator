@@ -1,7 +1,7 @@
 {
   "id": "facet-tag-navigator",
   "name": "Facet Tag Navigator",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "minAppVersion": "1.6.0",
   "description": "Exploratory, faceted tag browsing with nested-tag awareness and co-tag suggestions.",
   "author": "ScriptCeption",

@@ -1,4 +1,4 @@
-import { App, Plugin, WorkspaceLeaf, Notice } from "obsidian";
+import { App, Plugin, WorkspaceLeaf, Notice, PluginSettingTab, Setting } from "obsidian";
 import { FacetNavigatorView, VIEW_TYPE_FACET_NAV } from "./FacetNavigatorView";
 import { TagIndexer } from "./TagIndexer";
 import { FacetNavigatorSettings, SavedView } from "./types";
@@ -9,7 +9,12 @@ const DEFAULT_SETTINGS: FacetNavigatorSettings = {
   savedViews: [],
   groupMode: "namespace",
   namespaceDelimiter: "/",
-  maxCoTags: 150
+  maxCoTags: 150,
+  includeDescendantsByDefault: true,
+  coTagSort: "count",
+  resultsPageSize: 200,
+  showNamespaceHeaders: true,
+  startEmpty: false
 };
 
 export default class FacetNavigatorPlugin extends Plugin {
@@ -28,6 +33,9 @@ export default class FacetNavigatorPlugin extends Plugin {
         view?.refresh();
       });
     });
+
+    // Add settings tab
+    this.addSettingTab(new FacetSettingsTab(this.app, this));
 
     this.registerView(VIEW_TYPE_FACET_NAV, (leaf) => new FacetNavigatorView(leaf, this.app, this.indexer, this.settings));
 
@@ -240,6 +248,73 @@ export default class FacetNavigatorPlugin extends Plugin {
         }
       };
     });
+  }
+}
+
+class FacetSettingsTab extends PluginSettingTab {
+  plugin: FacetNavigatorPlugin;
+  
+  constructor(app: App, plugin: FacetNavigatorPlugin) { 
+    super(app, plugin); 
+    this.plugin = plugin; 
+  }
+  
+  display() {
+    const { containerEl } = this; 
+    containerEl.empty();
+    
+    new Setting(containerEl)
+      .setName("Include nested by default")
+      .setDesc("When adding a tag facet, include all descendant tags by default")
+      .addToggle(t => t
+        .setValue(this.plugin.settings.includeDescendantsByDefault ?? true)
+        .onChange(async v => { 
+          this.plugin.settings.includeDescendantsByDefault = v; 
+          await this.plugin.saveSettings(); 
+        }));
+    
+    new Setting(containerEl)
+      .setName("Co-tag sort")
+      .setDesc("How to sort co-tags in the left panel")
+      .addDropdown(d => d
+        .addOptions({ count: "By count", alpha: "Alphabetical" })
+        .setValue(this.plugin.settings.coTagSort ?? "count")
+        .onChange(async v => { 
+          (this.plugin.settings as any).coTagSort = v as any; 
+          await this.plugin.saveSettings(); 
+        }));
+    
+    new Setting(containerEl)
+      .setName("Results page size")
+      .setDesc("How many results to show per page")
+      .addSlider(s => s
+        .setLimits(50, 500, 50)
+        .setValue(this.plugin.settings.resultsPageSize ?? 200)
+        .setDynamicTooltip()
+        .onChange(async v => { 
+          this.plugin.settings.resultsPageSize = v; 
+          await this.plugin.saveSettings(); 
+        }));
+    
+    new Setting(containerEl)
+      .setName("Show namespace headers")
+      .setDesc("Show namespace headers in the co-tags panel")
+      .addToggle(t => t
+        .setValue(this.plugin.settings.showNamespaceHeaders ?? true)
+        .onChange(async v => { 
+          this.plugin.settings.showNamespaceHeaders = v; 
+          await this.plugin.saveSettings(); 
+        }));
+    
+    new Setting(containerEl)
+      .setName("Start empty")
+      .setDesc("Don't show all files when no facets are selected (better performance)")
+      .addToggle(t => t
+        .setValue(this.plugin.settings.startEmpty ?? false)
+        .onChange(async v => { 
+          this.plugin.settings.startEmpty = v; 
+          await this.plugin.saveSettings(); 
+        }));
   }
 }
 
