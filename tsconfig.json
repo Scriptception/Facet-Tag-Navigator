@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2020", "DOM"],
+    "types": ["obsidian"],
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "useDefineForClassFields": false
+  },
+  "include": ["**/*.ts"]
+}
+
