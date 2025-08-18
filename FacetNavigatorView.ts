@@ -94,6 +94,13 @@ export class FacetNavigatorView extends ItemView {
     
     const mode = this.settings.includeDescendantsByDefault ? "descendants" : "exact";
     this.selected.set(n, mode);
+    
+    // Clear search input when adding a facet
+    this.searchQuery = "";
+    if (this.searchInput) {
+      this.searchInput.value = "";
+    }
+    
     this.refresh();
   }
 
@@ -103,6 +110,13 @@ export class FacetNavigatorView extends ItemView {
     if (!n) return;
     
     this.selected.set(n, "exact");
+    
+    // Clear search input when adding a facet
+    this.searchQuery = "";
+    if (this.searchInput) {
+      this.searchInput.value = "";
+    }
+    
     this.refresh();
   }
 
@@ -121,6 +135,13 @@ export class FacetNavigatorView extends ItemView {
     
     const newMode = current === "exact" ? "descendants" : "exact";
     this.selected.set(n, newMode);
+    
+    // Clear search input when toggling facet modes
+    this.searchQuery = "";
+    if (this.searchInput) {
+      this.searchInput.value = "";
+    }
+    
     this.refresh();
   }
 
@@ -132,6 +153,13 @@ export class FacetNavigatorView extends ItemView {
     } else {
       this.excluded.add(n);
     }
+    
+    // Clear search input when toggling excluded facets
+    this.searchQuery = "";
+    if (this.searchInput) {
+      this.searchInput.value = "";
+    }
+    
     this.refresh();
   }
 
@@ -284,7 +312,7 @@ export class FacetNavigatorView extends ItemView {
         
         // Render children of the namespace
         const children = sortNodes(nsNode.children.values(), this.settings.coTagSort);
-        const expandDefault = Boolean(this.searchQuery);
+        const expandDefault = Boolean(this.searchQuery) || this.selected.size > 0 || this.excluded.size > 0;
         for (const child of children) {
           this.renderTreeNode(section, child, 0, expandDefault);
         }
@@ -293,7 +321,7 @@ export class FacetNavigatorView extends ItemView {
       // Flat list
       const allNodes = Array.from(treeRoots.values());
       const sortedNodes = sortNodes(allNodes, this.settings.coTagSort);
-      const expandDefault = Boolean(this.searchQuery);
+      const expandDefault = Boolean(this.searchQuery) || this.selected.size > 0 || this.excluded.size > 0;
       
       for (const node of sortedNodes) {
         this.renderTreeNode(this.coTagsEl, node, 0, expandDefault);
@@ -524,6 +552,37 @@ export class FacetNavigatorView extends ItemView {
   private filterCoTags(query: string) {
     this.searchQuery = query;
     this.renderCoTags();
+  }
+
+  /** Check if a tag node or any of its descendants are currently selected */
+  private hasSelectedDescendants(node: TagTreeNode): boolean {
+    // Check if this exact tag is selected
+    if (this.selected.has(node.full) || this.excluded.has(node.full)) {
+      return true;
+    }
+    
+    // Check if any descendant tags are selected
+    for (const [selectedTag] of this.selected) {
+      if (selectedTag.startsWith(node.full + "/")) {
+        return true;
+      }
+    }
+    
+    // Check if any excluded tags are descendants
+    for (const excludedTag of this.excluded) {
+      if (excludedTag.startsWith(node.full + "/")) {
+        return true;
+      }
+    }
+    
+    // Recursively check children
+    for (const child of node.children.values()) {
+      if (this.hasSelectedDescendants(child)) {
+        return true;
+      }
+    }
+    
+    return false;
   }
 }
 
