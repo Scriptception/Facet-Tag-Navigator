@@ -8,6 +8,8 @@
   padding: .75rem;
   min-height: 0;
   box-sizing: border-box;
+  /* Default width variable */
+  --facet-left: clamp(180px, 22vw, 260px);
 }
 
 /* Local scroll context that holds bars + search + main columns */
@@ -23,19 +25,38 @@
 /* Two columns on desktop */
 .facet-main {
   display: grid;
-  grid-template-columns: 300px 1fr;
+  grid-template-columns: var(--facet-left) 6px 1fr; /* left | resizer | right */
   gap: .6rem;
   min-height: 0;
 }
 
 /* Left (filters) / Right (results) panes scroll independently */
 .co-tags { 
-  border-right: 1px solid var(--background-modifier-border); 
-  padding-right: .5rem; 
+  border-right: 0; 
+  padding-right: .25rem; 
   overflow: auto; 
   min-height: 0; 
 }
 .results { overflow: auto; min-height: 0; }
+
+/* New resizer between panes */
+.facet-resizer {
+  width: 6px;
+  cursor: col-resize;
+  background: transparent;
+  position: relative;
+}
+.facet-resizer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--background-modifier-border);
+  opacity: .4;
+}
+.facet-resizer:hover::after,
+.facet-resizer.is-dragging::after {
+  opacity: .7;
+}
 
 /* ============= Controls, chips, search ============= */
 .facet-bar, .search-row { align-items: center; }
@@ -162,6 +183,7 @@
 /* ============= Mobile (≤ 700px) ============= */
 @media (max-width: 700px) {
   .facet-main { grid-template-columns: 1fr; }
+  .facet-resizer { display: none; }
   .co-tags { border-right: 0; border-bottom: 1px solid var(--background-modifier-border); padding-right: 0; padding-bottom: .5rem; max-height: 40vh; }
   .results { max-height: none; }
 

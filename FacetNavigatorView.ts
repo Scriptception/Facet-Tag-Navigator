@@ -31,6 +31,48 @@ export class FacetNavigatorView extends ItemView {
     this.settings = settings;
   }
 
+  /** Set up resizable sidebar functionality */
+  private setupResizableSidebar(resizerEl: HTMLElement) {
+    const STORAGE_KEY = 'facetNav:leftWidthPx';
+
+    const setLeftWidth = (px: number) => {
+      const min = 160;         // bounds
+      const max = 520;
+      const clamped = Math.max(min, Math.min(max, px));
+      this.rootEl.style.setProperty('--facet-left', `${clamped}px`);
+      localStorage.setItem(STORAGE_KEY, String(clamped));
+    };
+
+    const startDrag = (e: MouseEvent) => {
+      e.preventDefault();
+      resizerEl.classList.add('is-dragging');
+      const startX = e.clientX;
+      const startWidth = this.coTagsEl.getBoundingClientRect().width;
+
+      const onMove = (ev: MouseEvent) => {
+        const dx = ev.clientX - startX;
+        setLeftWidth(startWidth + dx);
+      };
+
+      const onUp = () => {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        resizerEl.classList.remove('is-dragging');
+      };
+
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    };
+
+    resizerEl.addEventListener('mousedown', startDrag);
+
+    // Restore saved width on load
+    const saved = Number(localStorage.getItem(STORAGE_KEY));
+    if (!Number.isNaN(saved) && saved > 0) {
+      this.rootEl.style.setProperty('--facet-left', `${saved}px`);
+    }
+  }
+
   getViewType() { return VIEW_TYPE_FACET_NAV; }
   getDisplayText() { return "Facet Navigator"; }
   getIcon() { return "filter"; }
@@ -76,11 +118,18 @@ export class FacetNavigatorView extends ItemView {
       this.filterCoTags(query);
     });
 
-    // Main: left co-tags, right results
+    // Main: left co-tags, resizer, right results
     const main = scroll.createDiv({ cls: "facet-main" });
     
     this.coTagsEl = main.createDiv({ cls: "co-tags" });
+    
+    // Add resize handle between panes
+    const resizerEl = main.createDiv({ cls: "facet-resizer" });
+    
     this.resultsEl = main.createDiv({ cls: "results" });
+
+    // Set up resizable sidebar functionality
+    this.setupResizableSidebar(resizerEl);
 
     // Initial render
     this.refresh();
