@@ -282,3 +282,34 @@
   flex: 1 1 auto;
   min-height: 0;
 }
+
+/* ============= Keyboard Navigation ============= */
+.tag-row.focused {
+  background: var(--background-modifier-hover);
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: -2px;
+}
+
+.tag-row.focused .tag-label {
+  color: var(--interactive-accent);
+  font-weight: 600;
+}
+
+/* Focus indicator for search input */
+.search-input:focus {
+  outline: none; 
+  border-color: var(--interactive-accent);
+  box-shadow: 0 0 0 2px var(--interactive-accent-hover);
+}
+
+/* Focus styles for result items */
+.result-item.focused {
+  background: var(--background-modifier-hover);
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: -2px;
+}
+
+.result-item.focused a {
+  color: var(--interactive-accent);
+  font-weight: 600;
+}

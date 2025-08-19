@@ -118,9 +118,22 @@ export class FacetNavigatorView extends ItemView {
     
     // Add search functionality
     this.searchInput.addEventListener("input", (e) => {
-      const query = (e.target as HTMLInputElement).value.toLowerCase();
+      const query = (e.target as HTMLInputElement).value;
       this.searchQuery = query;
-      this.filterCoTags(query);
+      
+      // Mark typing in search as search interaction
+      this.lastInteractionType = 'search';
+      
+      // Update placeholder for slash commands
+      if (query.startsWith('/')) {
+        this.updateSlashCommandHint(query);
+        // Don't filter results for slash commands
+        this.searchQuery = '';
+        this.filterCoTags('');
+      } else {
+        this.searchInput.placeholder = "Search tags...";
+        this.filterCoTags(query.toLowerCase());
+      }
     });
 
     // Main: left co-tags, resizer, right results
@@ -138,6 +151,9 @@ export class FacetNavigatorView extends ItemView {
 
     // Initial render
     this.refresh();
+    
+    // Set up keyboard navigation
+    this.setupKeyboardNavigation();
   }
 
   async onClose() {}
@@ -364,6 +380,14 @@ export class FacetNavigatorView extends ItemView {
 
   // Store expansion state between renders
   private expansionState = new Map<string, boolean>();
+  
+  // Keyboard navigation state
+  private focusedTagIndex = -1;
+  private allVisibleTags: TagTreeNode[] = [];
+  private searchFocused = true;
+  private focusMode: 'search' | 'tags' | 'results' = 'search';
+  private focusedResultIndex = -1;
+  private lastInteractionType: 'search' | 'navigation' = 'search';
 
   private restoreExpansionState(treeRoots: Map<string, TagTreeNode>) {
     const restoreNode = (node: TagTreeNode) => {
@@ -394,6 +418,589 @@ export class FacetNavigatorView extends ItemView {
 
   private saveExpansionState(node: TagTreeNode) {
     this.expansionState.set(node.full, node.expanded || false);
+  }
+
+  private setupKeyboardNavigation() {
+    this.rootEl.addEventListener('keydown', (e) => this.handleKeyDown(e));
+    
+    // Focus management
+    this.searchInput.addEventListener('focus', () => {
+      this.focusMode = 'search';
+      this.focusedTagIndex = -1;
+      this.focusedResultIndex = -1;
+      this.updateFocusVisuals();
+    });
+    
+    this.searchInput.addEventListener('blur', () => {
+      // Don't change focus mode on blur - let tab navigation handle it
+    });
+  }
+
+
+
+  private slashCommandBuffer = '';
+  private slashCommandTimeout: number | null = null;
+
+  private handleSlashCommandStart(e: KeyboardEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    // Clear any existing buffer
+    this.slashCommandBuffer = '';
+    
+    // Focus search and start slash command
+    this.focusSearch();
+    this.searchInput.value = '/';
+    this.searchInput.setSelectionRange(1, 1); // Place cursor after /
+    this.searchQuery = '/';
+    
+    // Set up timeout to clear buffer if no more typing
+    if (this.slashCommandTimeout) {
+      clearTimeout(this.slashCommandTimeout);
+    }
+    this.slashCommandTimeout = setTimeout(() => {
+      this.slashCommandBuffer = '';
+    }, 3000); // Clear after 3 seconds of inactivity
+  }
+
+  private isTypingSlashCommand(e: KeyboardEvent): boolean {
+    // Check if we're in the middle of typing a slash command
+    if (this.slashCommandBuffer.startsWith('/')) {
+      return true;
+    }
+    
+    // Check if search input has a slash command
+    if (this.searchInput && this.searchInput.value.startsWith('/')) {
+      return true;
+    }
+    
+    return false;
+  }
+
+  private handleSlashCommandTyping(e: KeyboardEvent) {
+    // Route all typing to search input when building slash command
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      e.stopPropagation();
+      this.handleSearchEnter();
+      return;
+    }
+    
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      this.clearSlashCommand();
+      return;
+    }
+    
+    if (e.key === 'Backspace') {
+      e.preventDefault();
+      e.stopPropagation();
+      if (this.searchInput.value.length > 1) {
+        this.searchInput.value = this.searchInput.value.slice(0, -1);
+        this.searchQuery = this.searchInput.value;
+        this.updateSlashCommandHint(this.searchInput.value);
+      } else {
+        this.clearSlashCommand();
+      }
+      return;
+    }
+    
+    // For other printable characters, add to search input
+    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
+      e.preventDefault();
+      e.stopPropagation();
+      this.searchInput.value += e.key;
+      this.searchQuery = this.searchInput.value;
+      this.updateSlashCommandHint(this.searchInput.value);
+      return;
+    }
+  }
+
+  private clearSlashCommand() {
+    this.searchInput.value = '';
+    this.searchQuery = '';
+    this.searchInput.placeholder = 'Search tags...';
+    this.slashCommandBuffer = '';
+    if (this.slashCommandTimeout) {
+      clearTimeout(this.slashCommandTimeout);
+      this.slashCommandTimeout = null;
+    }
+  }
+
+  private handleKeyDown(e: KeyboardEvent) {
+    // Check for slash commands first (global, regardless of focus)
+    if (e.key === '/' && !e.ctrlKey && !e.metaKey && this.focusMode !== 'search') {
+      this.handleSlashCommandStart(e);
+      return;
+    }
+    
+    // Check if we're typing a slash command sequence
+    if (this.isTypingSlashCommand(e)) {
+      this.handleSlashCommandTyping(e);
+      return;
+    }
+    
+    switch (this.focusMode) {
+      case 'search':
+        this.handleSearchKeyDown(e);
+        break;
+      case 'tags':
+        this.handleTagKeyDown(e);
+        break;
+      case 'results':
+        this.handleResultsKeyDown(e);
+        break;
+    }
+  }
+
+  private handleSearchKeyDown(e: KeyboardEvent) {
+    // Mark any key press in search as search interaction
+    this.lastInteractionType = 'search';
+    
+    switch (e.key) {
+      case 'Tab':
+        e.preventDefault();
+        this.lastInteractionType = 'navigation'; // Tab is navigation
+        if (e.shiftKey) {
+          // Shift+Tab from search goes to results (if any)
+          this.focusResults();
+        } else {
+          this.focusFirstTag();
+        }
+        break;
+      case 'Enter':
+        e.preventDefault();
+        this.handleSearchEnter();
+        break;
+      case 'Escape':
+        e.preventDefault();
+        this.searchInput.blur();
+        break;
+    }
+  }
+
+  private handleTagKeyDown(e: KeyboardEvent) {
+    switch (e.key) {
+      case 'Tab':
+        e.preventDefault();
+        this.lastInteractionType = 'navigation';
+        if (e.shiftKey) {
+          this.focusSearch();
+        } else {
+          this.focusResults();
+        }
+        break;
+      case 'ArrowUp':
+        e.preventDefault();
+        this.lastInteractionType = 'navigation';
+        this.focusPreviousTag();
+        break;
+      case 'ArrowDown':
+        e.preventDefault();
+        this.lastInteractionType = 'navigation';
+        this.focusNextTag();
+        break;
+      case 'ArrowLeft':
+        e.preventDefault();
+        this.lastInteractionType = 'navigation';
+        this.collapseCurrentTag();
+        break;
+      case 'ArrowRight':
+        e.preventDefault();
+        this.lastInteractionType = 'navigation';
+        this.expandCurrentTag();
+        break;
+      case 'Enter':
+        e.preventDefault();
+        // Shift+Enter to exclude current tag
+        if (e.shiftKey) {
+          this.excludeCurrentTag();
+        } else if (this.lastInteractionType === 'navigation') {
+          // Only select tag if last interaction was navigation (arrow keys, tab)
+          this.selectCurrentTag();
+        } else {
+          // If last interaction was search, handle as search enter
+          this.handleSearchEnter();
+        }
+        break;
+      case 'Escape':
+        e.preventDefault();
+        this.focusSearch();
+        break;
+    }
+  }
+
+  private focusSearch() {
+    this.focusMode = 'search';
+    this.focusedTagIndex = -1;
+    this.focusedResultIndex = -1;
+    this.searchInput.focus();
+    this.updateFocusVisuals();
+  }
+
+  private focusFirstTag() {
+    this.focusMode = 'tags';
+    this.focusedTagIndex = 0;
+    this.focusedResultIndex = -1;
+    this.updateFocusVisuals();
+  }
+
+  private focusResults() {
+    this.focusMode = 'results';
+    this.focusedTagIndex = -1;
+    this.focusedResultIndex = 0;
+    this.updateFocusVisuals();
+  }
+
+  private handleResultsKeyDown(e: KeyboardEvent) {
+    switch (e.key) {
+      case 'Tab':
+        e.preventDefault();
+        this.lastInteractionType = 'navigation';
+        if (e.shiftKey) {
+          this.focusFirstTag();
+        } else {
+          this.focusSearch();
+        }
+        break;
+      case 'ArrowUp':
+        e.preventDefault();
+        this.lastInteractionType = 'navigation';
+        this.focusPreviousResult();
+        break;
+      case 'ArrowDown':
+        e.preventDefault();
+        this.lastInteractionType = 'navigation';
+        this.focusNextResult();
+        break;
+      case 'Enter':
+        e.preventDefault();
+        this.lastInteractionType = 'navigation';
+        if (e.shiftKey) {
+          // Shift+Enter in results doesn't make sense for file opening
+          // Just ignore it and do nothing
+          return;
+        }
+        this.openCurrentResult();
+        break;
+      case 'Escape':
+        e.preventDefault();
+        this.focusSearch();
+        break;
+    }
+  }
+
+  private focusNextResult() {
+    const resultItems = this.resultsEl.querySelectorAll('.result-item');
+    if (resultItems.length === 0) return;
+    this.focusedResultIndex = Math.min(this.focusedResultIndex + 1, resultItems.length - 1);
+    this.updateFocusVisuals();
+    this.scrollToFocusedResult();
+  }
+
+  private focusPreviousResult() {
+    const resultItems = this.resultsEl.querySelectorAll('.result-item');
+    if (resultItems.length === 0) return;
+    this.focusedResultIndex = Math.max(this.focusedResultIndex - 1, 0);
+    this.updateFocusVisuals();
+    this.scrollToFocusedResult();
+  }
+
+  private openCurrentResult() {
+    if (this.focusedResultIndex >= 0) {
+      const resultItems = this.resultsEl.querySelectorAll('.result-item');
+      if (this.focusedResultIndex < resultItems.length) {
+        const link = resultItems[this.focusedResultIndex].querySelector('a');
+        if (link) {
+          link.click();
+        }
+      }
+    }
+  }
+
+  private scrollToFocusedResult() {
+    if (this.focusedResultIndex >= 0) {
+      const resultItems = this.resultsEl.querySelectorAll('.result-item');
+      if (this.focusedResultIndex < resultItems.length) {
+        resultItems[this.focusedResultIndex].scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    }
+  }
+
+  private focusNextTag() {
+    if (this.allVisibleTags.length === 0) return;
+    this.focusedTagIndex = Math.min(this.focusedTagIndex + 1, this.allVisibleTags.length - 1);
+    this.updateFocusVisuals();
+    this.scrollToFocusedTag();
+  }
+
+  private focusPreviousTag() {
+    if (this.allVisibleTags.length === 0) return;
+    this.focusedTagIndex = Math.max(this.focusedTagIndex - 1, 0);
+    this.updateFocusVisuals();
+    this.scrollToFocusedTag();
+  }
+
+  private expandCurrentTag() {
+    if (this.focusedTagIndex >= 0 && this.focusedTagIndex < this.allVisibleTags.length) {
+      const node = this.allVisibleTags[this.focusedTagIndex];
+      if (node.children.size > 0 && !node.expanded) {
+        node.expanded = true;
+        this.saveExpansionState(node);
+        this.renderCoTags();
+      }
+    }
+  }
+
+  private collapseCurrentTag() {
+    if (this.focusedTagIndex >= 0 && this.focusedTagIndex < this.allVisibleTags.length) {
+      const node = this.allVisibleTags[this.focusedTagIndex];
+      if (node.children.size > 0 && node.expanded) {
+        node.expanded = false;
+        this.saveExpansionState(node);
+        this.renderCoTags();
+      }
+    }
+  }
+
+  private selectCurrentTag() {
+    if (this.focusedTagIndex >= 0 && this.focusedTagIndex < this.allVisibleTags.length) {
+      const node = this.allVisibleTags[this.focusedTagIndex];
+      const selectedTag = normalizeTag(node.full);
+      
+      if (node.children.size > 0) {
+        // Parent tag - add as prefix
+        const mode: TagMatchMode = "prefix";
+        this.selected.set(selectedTag, mode);
+      } else {
+        // Leaf tag - add as exact
+        const mode: TagMatchMode = "exact";
+        this.selected.set(selectedTag, mode);
+      }
+      
+      // Store current focus info before refresh
+      const currentFocusTag = node.full;
+      const currentFocusIndex = this.focusedTagIndex;
+      
+      // Clear search when selecting a tag
+      this.searchQuery = "";
+      if (this.searchInput) this.searchInput.value = "";
+      
+      // Refresh and then try to restore focus
+      this.refresh();
+      this.restoreFocusAfterSelection(currentFocusTag, currentFocusIndex);
+    }
+  }
+
+  private excludeCurrentTag() {
+    if (this.focusedTagIndex >= 0 && this.focusedTagIndex < this.allVisibleTags.length) {
+      const node = this.allVisibleTags[this.focusedTagIndex];
+      const tagToExclude = normalizeTag(node.full);
+      
+      // Store current focus info before refresh
+      const currentFocusTag = node.full;
+      const currentFocusIndex = this.focusedTagIndex;
+      
+      // Toggle exclusion (same as Alt+click behavior)
+      this.toggleExcluded(tagToExclude);
+      
+      // Focus preservation is handled by toggleExcluded -> refresh
+      // But we still need to restore focus after the refresh
+      setTimeout(() => {
+        this.restoreFocusAfterSelection(currentFocusTag, currentFocusIndex);
+      }, 0);
+    }
+  }
+
+  private handleSearchEnter() {
+    if (this.searchQuery.trim() === '') return;
+    
+    // Check for slash commands first
+    if (this.handleSlashCommand(this.searchQuery.trim())) {
+      return;
+    }
+    
+    // Check for exact match
+    const exactMatch = this.allVisibleTags.find(tag => tag.full === this.searchQuery);
+    if (exactMatch) {
+      this.selectTagNode(exactMatch);
+      return;
+    }
+    
+    // Check for single match
+    const matches = this.allVisibleTags.filter(tag => 
+      tag.full.toLowerCase().includes(this.searchQuery.toLowerCase())
+    );
+    
+    if (matches.length === 1) {
+      this.selectTagNode(matches[0]);
+    } else if (matches.length === 0) {
+      new Notice("No tags match the search query.");
+    } else {
+      new Notice(`Multiple matches found. Narrow down your search to select a specific tag.`);
+    }
+  }
+
+  private handleSlashCommand(command: string): boolean {
+    if (!command.startsWith('/')) return false;
+    
+    const cmd = command.toLowerCase();
+    
+    switch (cmd) {
+      case '/clear':
+        this.clearAll();
+        new Notice("Cleared all facets and search");
+        return true;
+        
+      case '/expand':
+        this.expandAllTags();
+        new Notice("Expanded all tags");
+        return true;
+        
+      case '/collapse':
+        this.collapseAllTags();
+        new Notice("Collapsed all tags");
+        return true;
+        
+      default:
+        // Check for partial matches to provide helpful suggestions
+        const availableCommands = ['/clear', '/expand', '/collapse'];
+        const suggestions = availableCommands.filter(c => c.startsWith(cmd));
+        
+        if (suggestions.length > 0) {
+          new Notice(`Did you mean: ${suggestions.join(', ')}?`);
+        } else {
+          new Notice(`Unknown command: ${command}. Available: /clear, /expand, /collapse`);
+        }
+        return true;
+    }
+  }
+
+  private expandAllTags() {
+    // Set all expansion states to true
+    for (const [tagPath] of this.expansionState) {
+      this.expansionState.set(tagPath, true);
+    }
+    
+    // Update button text
+    if (this.btnToggleExpansion) {
+      this.btnToggleExpansion.textContent = "Collapse All";
+    }
+    
+    // Clear search and re-render
+    this.searchQuery = "";
+    if (this.searchInput) this.searchInput.value = "";
+    this.renderCoTags();
+  }
+
+  private collapseAllTags() {
+    // Set all expansion states to false
+    for (const [tagPath] of this.expansionState) {
+      this.expansionState.set(tagPath, false);
+    }
+    
+    // Update button text
+    if (this.btnToggleExpansion) {
+      this.btnToggleExpansion.textContent = "Expand All";
+    }
+    
+    // Clear search and re-render
+    this.searchQuery = "";
+    if (this.searchInput) this.searchInput.value = "";
+    this.renderCoTags();
+  }
+
+  private updateSlashCommandHint(query: string) {
+    const availableCommands = ['/clear', '/expand', '/collapse'];
+    const matches = availableCommands.filter(cmd => cmd.startsWith(query.toLowerCase()));
+    
+    if (matches.length === 1) {
+      // Show completion hint
+      this.searchInput.placeholder = `${matches[0]} - Press Enter to execute`;
+    } else if (matches.length > 1) {
+      // Show available options
+      this.searchInput.placeholder = `Available: ${matches.join(', ')}`;
+    } else {
+      // Show all commands if no matches
+      this.searchInput.placeholder = `Commands: ${availableCommands.join(', ')}`;
+    }
+  }
+
+  private selectTagNode(node: TagTreeNode) {
+    if (node.children.size > 0) {
+      // Parent tag - add as prefix
+      const mode: TagMatchMode = "prefix";
+      this.selected.set(normalizeTag(node.full), mode);
+    } else {
+      // Leaf tag - add as exact
+      const mode: TagMatchMode = "exact";
+      this.selected.set(normalizeTag(node.full), mode);
+    }
+    // Clear search when selecting a tag
+    this.searchQuery = "";
+    if (this.searchInput) this.searchInput.value = "";
+    this.refresh();
+  }
+
+  private restoreFocusAfterSelection(previousFocusTag: string, previousFocusIndex: number) {
+    // Try to find the same tag in the new list
+    const newIndex = this.allVisibleTags.findIndex(tag => tag.full === previousFocusTag);
+    
+    if (newIndex >= 0) {
+      // Same tag found, focus it
+      this.focusedTagIndex = newIndex;
+    } else {
+      // Tag no longer available, try to focus a reasonable alternative
+      if (this.allVisibleTags.length > 0) {
+        // Try to keep similar index position, but clamp to available range
+        this.focusedTagIndex = Math.min(previousFocusIndex, this.allVisibleTags.length - 1);
+      } else {
+        // No tags available, clear focus
+        this.focusedTagIndex = -1;
+      }
+    }
+    
+    // Update visuals and ensure focused tag is visible
+    this.updateFocusVisuals();
+    this.scrollToFocusedTag();
+  }
+
+  private updateFocusVisuals() {
+    // Remove focus from all tags and results
+    this.coTagsEl.querySelectorAll('.tag-row').forEach(row => {
+      row.classList.remove('focused');
+    });
+    this.resultsEl.querySelectorAll('.result-item').forEach(item => {
+      item.classList.remove('focused');
+    });
+    
+    // Add focus to current tag
+    if (this.focusMode === 'tags' && this.focusedTagIndex >= 0 && this.focusedTagIndex < this.allVisibleTags.length) {
+      const focusedTag = this.allVisibleTags[this.focusedTagIndex];
+      const tagRow = this.coTagsEl.querySelector(`[data-tag="${focusedTag.full}"]`);
+      if (tagRow) {
+        tagRow.classList.add('focused');
+      }
+    }
+    
+    // Add focus to current result
+    if (this.focusMode === 'results' && this.focusedResultIndex >= 0) {
+      const resultItems = this.resultsEl.querySelectorAll('.result-item');
+      if (this.focusedResultIndex < resultItems.length) {
+        resultItems[this.focusedResultIndex].classList.add('focused');
+      }
+    }
+  }
+
+  private scrollToFocusedTag() {
+    if (this.focusedTagIndex >= 0 && this.focusedTagIndex < this.allVisibleTags.length) {
+      const focusedTag = this.allVisibleTags[this.focusedTagIndex];
+      const tagRow = this.coTagsEl.querySelector(`[data-tag="${focusedTag.full}"]`);
+      if (tagRow) {
+        tagRow.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    }
   }
 
   private toggleAllExpansion(button: HTMLElement) {
@@ -448,6 +1055,17 @@ export class FacetNavigatorView extends ItemView {
     // Restore expansion state after building the tree
     this.restoreExpansionState(treeRoots);
 
+    // Build flat list of all visible tags for keyboard navigation
+    this.allVisibleTags = [];
+    const collectVisibleTags = (node: TagTreeNode) => {
+      this.allVisibleTags.push(node);
+      if (node.children.size > 0 && node.expanded) {
+        for (const child of sortNodes(node.children.values(), this.settings.coTagSort)) {
+          collectVisibleTags(child);
+        }
+      }
+    };
+    
     // Render all tags in a single unified list
     if (treeRoots.size > 0) {
       const allNodes = Array.from(treeRoots.values());
@@ -457,8 +1075,12 @@ export class FacetNavigatorView extends ItemView {
       
       for (const node of sortedNodes) {
         this.renderTreeNode(this.coTagsEl, node, 0, expandDefault);
+        collectVisibleTags(node);
       }
     }
+    
+    // Update focus visuals after rendering
+    this.updateFocusVisuals();
   }
 
   /**
@@ -468,6 +1090,7 @@ export class FacetNavigatorView extends ItemView {
   private renderTreeNode(container: HTMLElement, node: TagTreeNode, depth: number, expandDefault: boolean) {
     const row = container.createDiv({ cls: "tag-row tag-hier" });
     row.setAttribute("data-depth", String(depth));
+    row.setAttribute("data-tag", node.full);
     row.classList.toggle("has-children", node.children.size > 0);
 
     // Initialize expansion state if not set
@@ -546,7 +1169,20 @@ export class FacetNavigatorView extends ItemView {
         // Select the tag (prefix mode for parents)
         const mode: TagMatchMode = "prefix";
         this.selected.set(normalizeTag(node.full), mode);
+        
+        // Store current focus info before refresh (for mouse clicks)
+        const currentFocusTag = node.full;
+        const currentFocusIndex = this.allVisibleTags.findIndex(tag => tag.full === node.full);
+        
+        // Clear search when selecting a tag
+        this.searchQuery = "";
+        if (this.searchInput) this.searchInput.value = "";
         this.refresh();
+        
+        // Restore focus after mouse selection
+        if (currentFocusIndex >= 0) {
+          this.restoreFocusAfterSelection(currentFocusTag, currentFocusIndex);
+        }
       });
     } else {
       // For non-expandable items: single click = select
@@ -562,7 +1198,20 @@ export class FacetNavigatorView extends ItemView {
         
         const mode: TagMatchMode = "exact";
         this.selected.set(normalizeTag(node.full), mode);
+        
+        // Store current focus info before refresh (for mouse clicks)
+        const currentFocusTag = node.full;
+        const currentFocusIndex = this.allVisibleTags.findIndex(tag => tag.full === node.full);
+        
+        // Clear search when selecting a tag
+        this.searchQuery = "";
+        if (this.searchInput) this.searchInput.value = "";
         this.refresh();
+        
+        // Restore focus after mouse selection
+        if (currentFocusIndex >= 0) {
+          this.restoreFocusAfterSelection(currentFocusTag, currentFocusIndex);
+        }
       });
     }
 
@@ -575,7 +1224,8 @@ export class FacetNavigatorView extends ItemView {
       ? "\nSingle-click: expand/collapse\nDouble-click: select branch (prefix match)\nCaret: expand/collapse" 
       : "\nClick: add as exact match facet";
     const countInfo = hasKids ? `\nBranch contains ${node.count} total items` : "";
-    label.setAttr("title", `${node.full}${exactNote}${countInfo}${modeHint}\nRight-click to toggle exact/prefix mode\nAlt+click to exclude`);
+    const keyboardHints = "\nKeyboard: Enter to select, Shift+Enter to exclude";
+    label.setAttr("title", `${node.full}${exactNote}${countInfo}${modeHint}\nRight-click to toggle exact/prefix mode\nAlt+click to exclude${keyboardHints}`);
 
     // Right-click to toggle exact/prefix mode
     row.addEventListener("contextmenu", (e) => {
