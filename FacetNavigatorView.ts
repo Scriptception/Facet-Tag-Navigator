@@ -24,6 +24,7 @@ export class FacetNavigatorView extends ItemView {
   private searchInput!: HTMLInputElement;
   private coTagsEl!: HTMLElement;
   private resultsEl!: HTMLElement;
+  private btnToggleExpansion!: HTMLElement;
 
   constructor(leaf: WorkspaceLeaf, app: App, indexer: TagIndexer, settings: FacetNavigatorSettings) {
     super(leaf);
@@ -86,13 +87,17 @@ export class FacetNavigatorView extends ItemView {
     this.barEl = scroll.createDiv({ cls: "facet-bar" });
     this.controlsEl = scroll.createDiv({ cls: "facet-controls" });
 
-    // Controls: Save View / Export / Clear
+    // Controls: Save View / Export / Clear / Collapse Toggle
     const btnSave = this.controlsEl.createEl("button", { text: "Save View" });
     btnSave.addEventListener("click", () => this.saveView());
     const btnExport = this.controlsEl.createEl("button", { text: "Export Query" });
     btnExport.addEventListener("click", () => this.exportQuery());
     const btnClear = this.controlsEl.createEl("button", { text: "Clear" });
     btnClear.addEventListener("click", () => this.clearAll());
+    
+    // Collapse/Expand All toggle
+    this.btnToggleExpansion = this.controlsEl.createEl("button", { text: "Expand All" });
+    this.btnToggleExpansion.addEventListener("click", () => this.toggleAllExpansion(this.btnToggleExpansion));
 
     // Mobile-only filters toggle
     const btnFilters = this.controlsEl.createEl("button", { text: "Filters", cls: "mobile-only" });
@@ -143,6 +148,12 @@ export class FacetNavigatorView extends ItemView {
     this.excluded.clear();
     this.searchQuery = "";
     if (this.searchInput) this.searchInput.value = "";
+    // Clear expansion state to ensure collapsed view after clearing
+    this.expansionState.clear();
+    // Update toggle button to reflect collapsed state
+    if (this.btnToggleExpansion) {
+      this.btnToggleExpansion.textContent = "Expand All";
+    }
     this.refresh();
   }
 
@@ -356,13 +367,18 @@ export class FacetNavigatorView extends ItemView {
 
   private restoreExpansionState(treeRoots: Map<string, TagTreeNode>) {
     const restoreNode = (node: TagTreeNode) => {
-      // Restore expansion state if it exists, otherwise default to true for search/selection contexts
+      // Restore expansion state if it exists, otherwise default based on context
       const savedState = this.expansionState.get(node.full);
       if (savedState !== undefined) {
         node.expanded = savedState;
       } else {
-        // Default expansion based on context
-        node.expanded = Boolean(this.searchQuery) || this.selected.size > 0 || this.excluded.size > 0;
+        // Default expansion based on context:
+        // - Expanded only when actively searching
+        // - Collapsed when no facets are selected (clean state after Clear)
+        const defaultExpanded = Boolean(this.searchQuery);
+        node.expanded = defaultExpanded;
+        // Save the initial state
+        this.expansionState.set(node.full, defaultExpanded);
       }
       
       // Recursively restore children
@@ -378,6 +394,24 @@ export class FacetNavigatorView extends ItemView {
 
   private saveExpansionState(node: TagTreeNode) {
     this.expansionState.set(node.full, node.expanded || false);
+  }
+
+  private toggleAllExpansion(button: HTMLElement) {
+    // Determine current state - if most nodes are expanded, we'll collapse all, otherwise expand all
+    const expandedCount = Array.from(this.expansionState.values()).filter(Boolean).length;
+    const totalCount = this.expansionState.size;
+    const shouldCollapse = expandedCount > totalCount / 2;
+    
+    // Set all expansion states
+    for (const [tagPath] of this.expansionState) {
+      this.expansionState.set(tagPath, !shouldCollapse);
+    }
+    
+    // Update button text
+    button.textContent = shouldCollapse ? "Expand All" : "Collapse All";
+    
+    // Re-render to apply changes
+    this.renderCoTags();
   }
 
   private renderCoTags() {
@@ -418,7 +452,8 @@ export class FacetNavigatorView extends ItemView {
     if (treeRoots.size > 0) {
       const allNodes = Array.from(treeRoots.values());
       const sortedNodes = sortNodes(allNodes, this.settings.coTagSort);
-      const expandDefault = Boolean(this.searchQuery) || this.selected.size > 0 || this.excluded.size > 0;
+      // Only expand by default when actively searching
+      const expandDefault = Boolean(this.searchQuery);
       
       for (const node of sortedNodes) {
         this.renderTreeNode(this.coTagsEl, node, 0, expandDefault);
@@ -468,6 +503,12 @@ export class FacetNavigatorView extends ItemView {
         e.preventDefault();
         e.stopPropagation();
         
+        // Alt+click to exclude
+        if (e.altKey) {
+          this.toggleExcluded(node.full);
+          return;
+        }
+        
         if (clickTimeout !== null) {
           // This is part of a double-click, cancel the single-click action
           clearTimeout(clickTimeout);
@@ -475,13 +516,12 @@ export class FacetNavigatorView extends ItemView {
           return;
         }
         
-                      // Set timeout for single-click action (expand/collapse)
+        // Set timeout for single-click action (expand/collapse)
         clickTimeout = setTimeout(() => {
           clickTimeout = null;
           // Toggle expansion
           node.expanded = !node.expanded;
           this.saveExpansionState(node);
-
           this.renderCoTags();
         }, 200);
       });
@@ -490,6 +530,12 @@ export class FacetNavigatorView extends ItemView {
       label.addEventListener("dblclick", (e) => {
         e.preventDefault();
         e.stopPropagation();
+        
+        // Alt+double-click should still exclude, not select
+        if (e.altKey) {
+          this.toggleExcluded(node.full);
+          return;
+        }
         
         // Cancel any pending single-click
         if (clickTimeout !== null) {
@@ -507,6 +553,13 @@ export class FacetNavigatorView extends ItemView {
       label.addEventListener("click", (e) => {
         e.preventDefault();
         e.stopPropagation();
+        
+        // Alt+click to exclude
+        if (e.altKey) {
+          this.toggleExcluded(node.full);
+          return;
+        }
+        
         const mode: TagMatchMode = "exact";
         this.selected.set(normalizeTag(node.full), mode);
         this.refresh();
@@ -529,14 +582,6 @@ export class FacetNavigatorView extends ItemView {
       e.preventDefault();
       e.stopPropagation();
       this.toggleFacetMode(node.full);
-    });
-
-    // Alt+click to exclude
-    row.addEventListener("auxclick", (e) => {
-      if (e.button === 1) { // middle click
-        e.preventDefault();
-        this.toggleExcluded(node.full);
-      }
     });
 
     // Recursive rendering for children
@@ -620,8 +665,16 @@ export class FacetNavigatorView extends ItemView {
       const tagsContainer = item.createDiv({ cls: "file-tags" });
       for (const tag of Array.from(fileTags).slice(0, 5)) { // Limit to 5 tags
         const tagChip = tagsContainer.createSpan({ text: tag, cls: "file-tag" });
-        tagChip.addEventListener("click", () => this.addFacet(tag));
-        tagChip.setAttr("title", `Click to add ${tag} as a facet`);
+        tagChip.addEventListener("click", (e) => {
+          if (e.altKey) {
+            e.preventDefault();
+            e.stopPropagation();
+            this.toggleExcluded(tag);
+          } else {
+            this.addFacet(tag);
+          }
+        });
+        tagChip.setAttr("title", `Click to add ${tag} as a facet\nAlt+click to exclude`);
       }
       if (fileTags.size > 5) {
         tagsContainer.createSpan({ text: `+${fileTags.size - 5} more`, cls: "more-tags" });
