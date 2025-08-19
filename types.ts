@@ -1,5 +1,12 @@
 export type FileId = string; // we'll use file.path as id
 
+export type TagMatchMode = 'exact' | 'prefix';
+
+export interface TagFilter {
+  tag: string;         // e.g. 'security' or 'area/company'
+  mode: TagMatchMode;  // 'exact' for flat; 'prefix' for nested parents
+}
+
 export interface SavedView {
   name: string;
   tags: string[];        // included (AND)

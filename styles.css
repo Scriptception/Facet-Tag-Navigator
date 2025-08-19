@@ -99,6 +99,63 @@
 .co-tags .group { margin-bottom:.5rem; }
 .co-tags .group h4 { margin: .15rem 0; font-size: .9rem; opacity:.8; }
 
+/* Section headers with visual separation */
+.co-tags .group.nested h4 { 
+  border-left: 3px solid var(--interactive-accent); 
+  padding-left: .35rem; 
+}
+.co-tags .group.flat h4 { 
+  border-left: 3px solid var(--background-modifier-border); 
+  padding-left: .35rem; 
+}
+
+/* Row variants */
+.co-tags .tag-row.tag-hier .tag-label { 
+  font-weight: 500; 
+  cursor: pointer;
+}
+.co-tags .tag-row.tag-flat .tag-label { 
+  opacity: .9; 
+  cursor: pointer;
+}
+
+/* Indentation for hierarchical levels */
+.co-tags .tag-row[data-depth="0"] { padding-left: .30rem; }
+.co-tags .tag-row[data-depth="1"] { padding-left: 1.10rem; }
+.co-tags .tag-row[data-depth="2"] { padding-left: 1.90rem; }
+
+/* Caret affordance and hit-area */
+.co-tags .tag-row .tag-caret {
+  width: 1em;
+  text-align: center;
+  opacity: .7;
+  cursor: pointer;
+}
+.co-tags .tag-row .tag-caret:hover { opacity: 1; }
+
+/* Caret placeholder for consistent alignment */
+.co-tags .tag-row .tag-caret-placeholder {
+  width: 1em;
+  text-align: center;
+  opacity: 0;
+}
+
+/* Ensure consistent alignment for rows with/without children */
+.co-tags .tag-row.has-children .tag-label {
+  font-weight: 500;
+}
+
+/* Optional subtle hue difference so sections feel distinct */
+.co-tags .group.flat .tag-row { background: transparent; }
+.co-tags .group.flat .tag-row:hover { background: var(--background-secondary); }
+.co-tags .group.nested .tag-row:hover { background: var(--background-secondary); }
+
+/* Enhanced label hover effects */
+.co-tags .tag-row .tag-label:hover {
+  color: var(--interactive-accent);
+  text-decoration: underline;
+}
+
 .co-tags .tag-row { 
   display:flex; 
   justify-content:space-between; 

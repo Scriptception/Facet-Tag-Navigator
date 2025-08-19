@@ -7,6 +7,24 @@ export function normalize(tag: string): string {
   return withoutHash(tag).trim().replace(/\s+/g, "-").toLowerCase();
 }
 
+export function normalizeTag(input: string): string {
+  if (!input) return "";
+  let s = String(input).trim();
+  s = s.replace(/^#+/, "");         // drop leading #s
+  s = s.replace(/\s+/g, "-");       // spaces -> dash (matches your prior normalize)
+  s = s.replace(/\\+/g, "/");       // backslashes -> forward slash (safety)
+  s = s.replace(/\/+/g, "/");       // collapse // -> /
+  s = s.replace(/^\/|\/$/g, "");    // trim edge slashes
+  return s.toLowerCase();
+}
+
+export function splitTagString(input: string): string[] {
+  return String(input)
+    .split(/[\s,]+/)                 // split on spaces or commas
+    .map(normalizeTag)
+    .filter(Boolean);
+}
+
 export function intersectSets<T>(a: Set<T>, b: Set<T>): Set<T> {
   if (a.size > b.size) return intersectSets(b, a);
   const out = new Set<T>();
@@ -36,6 +54,7 @@ export interface TagTreeNode {
   count: number;             // rolled-up count (sum of all descendants)
   exactCount: number;        // count for this exact tag (0 if none)
   children: Map<string, TagTreeNode>;
+  expanded?: boolean;        // whether this node is expanded (optional)
 }
 
 // Build a hierarchical tree from a frequency map of tags.

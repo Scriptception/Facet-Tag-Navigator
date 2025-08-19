@@ -1,6 +1,6 @@
 import { App, CachedMetadata, MetadataCache, TFile, debounce, Plugin } from "obsidian";
 import { FileId } from "./types";
-import { normalize } from "./utils";
+import { normalize, normalizeTag, splitTagString } from "./utils";
 
 export class TagIndexer {
   private app: App;
@@ -68,10 +68,39 @@ export class TagIndexer {
   private collectTags(cache: CachedMetadata | null): string[] {
     if (!cache) return [];
     const set = new Set<string>();
-    for (const t of cache.tags ?? []) if (t?.tag) set.add(normalize(t.tag));
+
+    // Inline #tags from the editor
+    for (const t of cache.tags ?? []) {
+      if (t?.tag) {
+        const n = normalizeTag(t.tag);
+        if (n) set.add(n);
+      }
+    }
+
+    // Frontmatter (supports: array, space-separated string, comma-separated string)
     const fm: any = cache.frontmatter;
-    const push = (v: any) => { if (!v) return; Array.isArray(v) ? v.forEach(x => set.add(normalize(String(x)))) : set.add(normalize(String(v))); };
+    const push = (v: any) => {
+      if (!v) return;
+
+      if (Array.isArray(v)) {
+        v.forEach(push);
+        return;
+      }
+
+      if (typeof v === "string") {
+        splitTagString(v).forEach(n => set.add(n));
+        return;
+      }
+
+      // Extremely defensive: some people nest objects
+      if (typeof v === "object") {
+        ["tags", "tag", "value", "name"].forEach(k => v[k] && push(v[k]));
+      }
+    };
+
     if (fm) push(fm.tags ?? fm.tag);
+
+    // Return normalized, NO leading '#'
     return Array.from(set);
   }
 
