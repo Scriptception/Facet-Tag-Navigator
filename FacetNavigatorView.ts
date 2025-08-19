@@ -1,8 +1,14 @@
 import { App, ItemView, Notice, TFile, WorkspaceLeaf } from "obsidian";
 import { TagIndexer } from "./TagIndexer";
 import { FacetNavigatorSettings, SavedView, TagMatchMode, TagFilter } from "./types";
-import { buildTagTree, sortNodes, TagTreeNode, normalizeTag } from "./utils";
+import { TagTreeNode, normalizeTag } from "./utils";
 import { InputModal } from "./InputModal";
+import { ExpansionManager } from "./ExpansionManager";
+import { SlashCommandHandler } from "./SlashCommandHandler";
+import { KeyboardNavigator, FocusMode } from "./KeyboardNavigator";
+import { TagRenderer } from "./TagRenderer";
+import { ResultsRenderer } from "./ResultsRenderer";
+import { FacetManager } from "./FacetManager";
 
 export const VIEW_TYPE_FACET_NAV = "facet-navigator-view";
 
@@ -10,9 +16,15 @@ export class FacetNavigatorView extends ItemView {
   private indexer: TagIndexer;
   private settings: FacetNavigatorSettings;
 
-  // Facet selection: Map<tag, TagMatchMode> for exact vs prefix matching
-  private selected = new Map<string, TagMatchMode>();
-  private excluded = new Set<string>(); // NOT facets
+  // Modular components
+  private facetManager: FacetManager;
+  private expansionManager: ExpansionManager;
+  private keyboardNavigator: KeyboardNavigator;
+  private tagRenderer: TagRenderer;
+  private resultsRenderer: ResultsRenderer;
+  private slashCommandHandler: SlashCommandHandler;
+
+  // Core state
   private currentFiles = new Set<string>(); // result set
   private searchQuery = ""; // current search filter
 
@@ -30,6 +42,70 @@ export class FacetNavigatorView extends ItemView {
     super(leaf);
     this.indexer = indexer;
     this.settings = settings;
+
+    // Initialize modular components
+    this.facetManager = new FacetManager({
+      onRefresh: () => this.refresh(),
+      onClearSearch: () => {
+        this.searchQuery = "";
+        if (this.searchInput) this.searchInput.value = "";
+      }
+    });
+
+    this.expansionManager = new ExpansionManager();
+
+    this.keyboardNavigator = new KeyboardNavigator({
+      onFocusSearch: () => this.focusSearch(),
+      onFocusFirstTag: () => this.focusFirstTag(),
+      onFocusResults: () => this.focusResults(),
+      onSelectCurrentTag: () => this.selectCurrentTag(),
+      onExcludeCurrentTag: () => this.excludeCurrentTag(),
+      onExpandCurrentTag: () => this.expandCurrentTag(),
+      onCollapseCurrentTag: () => this.collapseCurrentTag(),
+      onOpenCurrentResult: () => this.openCurrentResult(),
+      onSearchEnter: () => this.handleSearchEnter(),
+      onSlashCommandStart: (e) => this.slashCommandHandler.startSlashCommand(this.searchInput),
+      onFocusNextTag: () => this.focusNextTag(),
+      onFocusPreviousTag: () => this.focusPreviousTag(),
+      onFocusNextResult: () => this.focusNextResult(),
+      onFocusPreviousResult: () => this.focusPreviousResult()
+    });
+
+    this.tagRenderer = new TagRenderer({
+      onToggleExcluded: (tag) => this.facetManager.toggleExcluded(tag),
+      onAddFacet: (tag, mode) => {
+        if (mode === "prefix") {
+          this.facetManager.addFacet(tag, this.settings.includeDescendantsByDefault, 
+            (t) => this.facetManager.hasTagChildren(t, this.indexer.allTags()));
+        } else {
+          this.facetManager.addFacetExact(tag);
+        }
+      },
+      onToggleFacetMode: (tag) => this.facetManager.toggleFacetMode(tag),
+      onToggleExpansion: (node) => {
+        this.expansionManager.saveExpansionState(node);
+        this.renderCoTags();
+      }
+    });
+
+    this.resultsRenderer = new ResultsRenderer({
+      onToggleExcluded: (tag) => this.facetManager.toggleExcluded(tag),
+      onAddFacet: (tag) => this.facetManager.addFacet(tag, this.settings.includeDescendantsByDefault,
+        (t) => this.facetManager.hasTagChildren(t, this.indexer.allTags()))
+    }, this.indexer);
+
+    this.slashCommandHandler = new SlashCommandHandler({
+      onClear: () => this.clearAll(),
+      onExpandAll: () => this.expandAllTags(),
+      onCollapseAll: () => this.collapseAllTags()
+    });
+
+    // Set up keyboard navigator callbacks
+    this.keyboardNavigator.setSlashCommandCallbacks({
+      onClear: () => this.clearAll(),
+      onExpandAll: () => this.expandAllTags(),
+      onCollapseAll: () => this.collapseAllTags()
+    });
   }
 
   /** Set up resizable sidebar functionality */
@@ -121,12 +197,8 @@ export class FacetNavigatorView extends ItemView {
       const query = (e.target as HTMLInputElement).value;
       this.searchQuery = query;
       
-      // Mark typing in search as search interaction
-      this.lastInteractionType = 'search';
-      
       // Update placeholder for slash commands
       if (query.startsWith('/')) {
-        this.updateSlashCommandHint(query);
         // Don't filter results for slash commands
         this.searchQuery = '';
         this.filterCoTags('');
@@ -160,12 +232,11 @@ export class FacetNavigatorView extends ItemView {
 
   /** External: reset selection */
   clearAll() {
-    this.selected.clear();
-    this.excluded.clear();
+    this.facetManager.clearAll();
     this.searchQuery = "";
     if (this.searchInput) this.searchInput.value = "";
     // Clear expansion state to ensure collapsed view after clearing
-    this.expansionState.clear();
+    this.expansionManager.clear();
     // Update toggle button to reflect collapsed state
     if (this.btnToggleExpansion) {
       this.btnToggleExpansion.textContent = "Expand All";
@@ -175,98 +246,33 @@ export class FacetNavigatorView extends ItemView {
 
   /** Add a facet with smart mode selection */
   addFacet(tag: string) {
-    const n = normalizeTag(tag);
-    if (!n) return;
-
-    let mode: TagMatchMode = "exact";
-    if (this.settings.includeDescendantsByDefault && this.hasTagChildren(n)) {
-      mode = "prefix";
-    }
-    this.selected.set(n, mode);
-    
-    // Clear search input when adding a facet
-    this.searchQuery = "";
-    if (this.searchInput) {
-      this.searchInput.value = "";
-    }
-    
-    this.refresh();
+    this.facetManager.addFacet(tag, this.settings.includeDescendantsByDefault, 
+      (t) => this.facetManager.hasTagChildren(t, this.indexer.allTags()));
   }
 
   /** Add a facet in exact mode */
   addFacetExact(tag: string) {
-    const n = normalizeTag(tag);
-    if (!n) return;
-    
-    this.selected.set(n, "exact" as TagMatchMode);
-    
-    // Clear search input when adding a facet
-    this.searchQuery = "";
-    if (this.searchInput) {
-      this.searchInput.value = "";
-    }
-    
-    this.refresh();
+    this.facetManager.addFacetExact(tag);
   }
 
   /** Remove a facet */
   removeFacet(tag: string) {
-    const n = normalizeTag(tag);
-    this.selected.delete(n);
-    this.refresh();
+    this.facetManager.removeFacet(tag);
   }
 
   /** Toggle between exact and prefix mode for a facet */
   toggleFacetMode(tag: string) {
-    const n = normalizeTag(tag);
-    const current = this.selected.get(n);
-    if (!current) return;
-    
-    const next: TagMatchMode = current === "exact" ? "prefix" : "exact";
-    this.selected.set(n, next);
-    
-    // Clear search input when toggling facet modes
-    this.searchQuery = "";
-    if (this.searchInput) {
-      this.searchInput.value = "";
-    }
-    
-    this.refresh();
+    this.facetManager.toggleFacetMode(tag);
   }
 
   /** Add/remove from excluded set */
   toggleExcluded(tag: string) {
-    const n = normalizeTag(tag);
-    if (this.excluded.has(n)) {
-      this.excluded.delete(n);
-    } else {
-      this.excluded.add(n);
-    }
-    
-    // Clear search input when toggling excluded facets
-    this.searchQuery = "";
-    if (this.searchInput) {
-      this.searchInput.value = "";
-    }
-    
-    this.refresh();
+    this.facetManager.toggleExcluded(tag);
   }
 
   /** Replace current facets with the provided list and refresh once */
   setFacets(tags: string[]) {
-    const normalized = tags.map(t => normalizeTag(t)).filter(Boolean);
-    this.selected.clear();
-    this.excluded.clear();
-    
-    for (const tag of normalized) {
-      const mode: TagMatchMode = this.settings.includeDescendantsByDefault ? "prefix" : "exact";
-      this.selected.set(tag, mode);
-    }
-    
-    // Reset any search filter and input UI
-    this.searchQuery = "";
-    if (this.searchInput) this.searchInput.value = "";
-    this.refresh();
+    this.facetManager.setFacets(tags, this.settings.includeDescendantsByDefault);
   }
 
   /** Check if a file matches the given tag filters */
@@ -288,7 +294,10 @@ export class FacetNavigatorView extends ItemView {
     }
 
     // Compute result set from selected facets
-    if (this.selected.size === 0) {
+    const selected = this.facetManager.getSelected();
+    const excluded = this.facetManager.getExcluded();
+    
+    if (selected.size === 0) {
       if (this.settings.startEmpty) {
         // Show no results, just co-tag panel derived from allTags()
         this.currentFiles = new Set();
@@ -303,10 +312,7 @@ export class FacetNavigatorView extends ItemView {
       }
     } else {
       // Get included files using new tag matching system
-      const filters: TagFilter[] = Array.from(this.selected.entries()).map(([tag, mode]) => ({
-        tag,
-        mode: mode === 'exact' ? 'exact' : 'prefix'
-      }));
+      const filters = this.facetManager.getTagFilters();
       
       // Get all files and filter them using our new matching logic
       const allFiles = this.app.vault.getMarkdownFiles();
@@ -314,14 +320,14 @@ export class FacetNavigatorView extends ItemView {
       
       for (const file of allFiles) {
         const fileTags = Array.from(this.indexer.exactTagsForFile(file.path));
-        if (this.fileMatches(filters, fileTags)) {
+        if (this.facetManager.fileMatches(filters, fileTags)) {
           this.currentFiles.add(file.path);
         }
       }
     }
 
     // Apply exclusions regardless of whether there are selected tags or not
-    if (this.excluded.size > 0) {
+    if (excluded.size > 0) {
       const allFiles = this.app.vault.getMarkdownFiles();
       const filesToRemove = new Set<string>();
       
@@ -329,7 +335,7 @@ export class FacetNavigatorView extends ItemView {
         const fileTags = Array.from(this.indexer.exactTagsForFile(file.path));
         
         // Check if any file tag matches or is a descendant of excluded tags
-        for (const excludedTag of this.excluded) {
+        for (const excludedTag of excluded) {
           for (const fileTag of fileTags) {
             if (fileTag === excludedTag || fileTag.startsWith(excludedTag + "/")) {
               filesToRemove.add(file.path);
@@ -354,7 +360,10 @@ export class FacetNavigatorView extends ItemView {
   private renderBar() {
     this.barEl.empty();
 
-    if (this.selected.size === 0 && this.excluded.size === 0) {
+    const selected = this.facetManager.getSelected();
+    const excluded = this.facetManager.getExcluded();
+
+    if (selected.size === 0 && excluded.size === 0) {
       const hint = this.barEl.createSpan({ 
         text: "Select a tag from the left to start drilling down.", 
         cls: "muted" 
@@ -364,7 +373,7 @@ export class FacetNavigatorView extends ItemView {
     }
 
     // Render included facets
-    for (const [tag, mode] of this.selected) {
+    for (const [tag, mode] of selected) {
       const chip = this.barEl.createDiv({ cls: "facet-chip" });
       const label = chip.createSpan({ text: tag });
       const modeIndicator = chip.createSpan({ 
@@ -376,76 +385,51 @@ export class FacetNavigatorView extends ItemView {
       // Right-click to toggle mode
       chip.addEventListener("contextmenu", (e) => {
         e.preventDefault();
-        this.toggleFacetMode(tag);
+        this.facetManager.toggleFacetMode(tag);
       });
       
       // Click to remove
-      x.addEventListener("click", () => this.removeFacet(tag));
+      x.addEventListener("click", () => this.facetManager.removeFacet(tag));
       
       // Tooltip
       chip.setAttr("title", `Right-click to toggle ${mode === "exact" ? "prefix" : "exact"} mode`);
     }
 
     // Render excluded facets
-    for (const tag of this.excluded) {
+    for (const tag of excluded) {
       const chip = this.barEl.createDiv({ cls: "facet-chip excluded" });
       chip.createSpan({ text: `NOT ${tag}` });
       const x = chip.createSpan({ text: "✕", cls: "remove" });
-      x.addEventListener("click", () => this.toggleExcluded(tag));
+      x.addEventListener("click", () => this.facetManager.toggleExcluded(tag));
       chip.setAttr("title", "Excluded facet - click to remove");
     }
   }
 
-  // Store expansion state between renders
-  private expansionState = new Map<string, boolean>();
-  
-  // Keyboard navigation state
-  private focusedTagIndex = -1;
-  private allVisibleTags: TagTreeNode[] = [];
-  private searchFocused = true;
-  private focusMode: 'search' | 'tags' | 'results' = 'search';
-  private focusedResultIndex = -1;
-  private lastInteractionType: 'search' | 'navigation' = 'search';
+  // Note: allVisibleTags is now managed by KeyboardNavigator
 
-  private restoreExpansionState(treeRoots: Map<string, TagTreeNode>) {
-    const restoreNode = (node: TagTreeNode) => {
-      // Restore expansion state if it exists, otherwise default based on context
-      const savedState = this.expansionState.get(node.full);
-      if (savedState !== undefined) {
-        node.expanded = savedState;
-      } else {
-        // Default expansion based on context:
-        // - Expanded only when actively searching
-        // - Collapsed when no facets are selected (clean state after Clear)
-        const defaultExpanded = Boolean(this.searchQuery);
-        node.expanded = defaultExpanded;
-        // Save the initial state
-        this.expansionState.set(node.full, defaultExpanded);
-      }
-      
-      // Recursively restore children
-      for (const child of node.children.values()) {
-        restoreNode(child);
-      }
-    };
 
-    for (const rootNode of treeRoots.values()) {
-      restoreNode(rootNode);
-    }
-  }
-
-  private saveExpansionState(node: TagTreeNode) {
-    this.expansionState.set(node.full, node.expanded || false);
-  }
 
   private setupKeyboardNavigation() {
-    this.rootEl.addEventListener('keydown', (e) => this.handleKeyDown(e));
+    this.rootEl.addEventListener('keydown', (e) => this.keyboardNavigator.handleKeyDown(e, {
+      onFocusSearch: () => this.focusSearch(),
+      onFocusFirstTag: () => this.focusFirstTag(),
+      onFocusResults: () => this.focusResults(),
+      onSelectCurrentTag: () => this.selectCurrentTag(),
+      onExcludeCurrentTag: () => this.excludeCurrentTag(),
+      onExpandCurrentTag: () => this.expandCurrentTag(),
+      onCollapseCurrentTag: () => this.collapseCurrentTag(),
+      onOpenCurrentResult: () => this.openCurrentResult(),
+      onSearchEnter: () => this.handleSearchEnter(),
+      onSlashCommandStart: (e) => this.slashCommandHandler.startSlashCommand(this.searchInput),
+      onFocusNextTag: () => this.focusNextTag(),
+      onFocusPreviousTag: () => this.focusPreviousTag(),
+      onFocusNextResult: () => this.focusNextResult(),
+      onFocusPreviousResult: () => this.focusPreviousResult()
+    }));
     
     // Focus management
     this.searchInput.addEventListener('focus', () => {
-      this.focusMode = 'search';
-      this.focusedTagIndex = -1;
-      this.focusedResultIndex = -1;
+      this.keyboardNavigator.focusSearch();
       this.updateFocusVisuals();
     });
     
@@ -456,280 +440,51 @@ export class FacetNavigatorView extends ItemView {
 
 
 
-  private slashCommandBuffer = '';
-  private slashCommandTimeout: number | null = null;
 
-  private handleSlashCommandStart(e: KeyboardEvent) {
-    e.preventDefault();
-    e.stopPropagation();
-    
-    // Clear any existing buffer
-    this.slashCommandBuffer = '';
-    
-    // Focus search and start slash command
-    this.focusSearch();
-    this.searchInput.value = '/';
-    this.searchInput.setSelectionRange(1, 1); // Place cursor after /
-    this.searchQuery = '/';
-    
-    // Set up timeout to clear buffer if no more typing
-    if (this.slashCommandTimeout) {
-      clearTimeout(this.slashCommandTimeout);
-    }
-    this.slashCommandTimeout = setTimeout(() => {
-      this.slashCommandBuffer = '';
-    }, 3000); // Clear after 3 seconds of inactivity
-  }
 
-  private isTypingSlashCommand(e: KeyboardEvent): boolean {
-    // Check if we're in the middle of typing a slash command
-    if (this.slashCommandBuffer.startsWith('/')) {
-      return true;
-    }
-    
-    // Check if search input has a slash command
-    if (this.searchInput && this.searchInput.value.startsWith('/')) {
-      return true;
-    }
-    
-    return false;
-  }
 
-  private handleSlashCommandTyping(e: KeyboardEvent) {
-    // Route all typing to search input when building slash command
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      e.stopPropagation();
-      this.handleSearchEnter();
-      return;
-    }
-    
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      e.stopPropagation();
-      this.clearSlashCommand();
-      return;
-    }
-    
-    if (e.key === 'Backspace') {
-      e.preventDefault();
-      e.stopPropagation();
-      if (this.searchInput.value.length > 1) {
-        this.searchInput.value = this.searchInput.value.slice(0, -1);
-        this.searchQuery = this.searchInput.value;
-        this.updateSlashCommandHint(this.searchInput.value);
-      } else {
-        this.clearSlashCommand();
-      }
-      return;
-    }
-    
-    // For other printable characters, add to search input
-    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
-      e.preventDefault();
-      e.stopPropagation();
-      this.searchInput.value += e.key;
-      this.searchQuery = this.searchInput.value;
-      this.updateSlashCommandHint(this.searchInput.value);
-      return;
-    }
-  }
 
-  private clearSlashCommand() {
-    this.searchInput.value = '';
-    this.searchQuery = '';
-    this.searchInput.placeholder = 'Search tags...';
-    this.slashCommandBuffer = '';
-    if (this.slashCommandTimeout) {
-      clearTimeout(this.slashCommandTimeout);
-      this.slashCommandTimeout = null;
-    }
-  }
 
-  private handleKeyDown(e: KeyboardEvent) {
-    // Check for slash commands first (global, regardless of focus)
-    if (e.key === '/' && !e.ctrlKey && !e.metaKey && this.focusMode !== 'search') {
-      this.handleSlashCommandStart(e);
-      return;
-    }
-    
-    // Check if we're typing a slash command sequence
-    if (this.isTypingSlashCommand(e)) {
-      this.handleSlashCommandTyping(e);
-      return;
-    }
-    
-    switch (this.focusMode) {
-      case 'search':
-        this.handleSearchKeyDown(e);
-        break;
-      case 'tags':
-        this.handleTagKeyDown(e);
-        break;
-      case 'results':
-        this.handleResultsKeyDown(e);
-        break;
-    }
-  }
 
-  private handleSearchKeyDown(e: KeyboardEvent) {
-    // Mark any key press in search as search interaction
-    this.lastInteractionType = 'search';
-    
-    switch (e.key) {
-      case 'Tab':
-        e.preventDefault();
-        this.lastInteractionType = 'navigation'; // Tab is navigation
-        if (e.shiftKey) {
-          // Shift+Tab from search goes to results (if any)
-          this.focusResults();
-        } else {
-          this.focusFirstTag();
-        }
-        break;
-      case 'Enter':
-        e.preventDefault();
-        this.handleSearchEnter();
-        break;
-      case 'Escape':
-        e.preventDefault();
-        this.searchInput.blur();
-        break;
-    }
-  }
 
-  private handleTagKeyDown(e: KeyboardEvent) {
-    switch (e.key) {
-      case 'Tab':
-        e.preventDefault();
-        this.lastInteractionType = 'navigation';
-        if (e.shiftKey) {
-          this.focusSearch();
-        } else {
-          this.focusResults();
-        }
-        break;
-      case 'ArrowUp':
-        e.preventDefault();
-        this.lastInteractionType = 'navigation';
-        this.focusPreviousTag();
-        break;
-      case 'ArrowDown':
-        e.preventDefault();
-        this.lastInteractionType = 'navigation';
-        this.focusNextTag();
-        break;
-      case 'ArrowLeft':
-        e.preventDefault();
-        this.lastInteractionType = 'navigation';
-        this.collapseCurrentTag();
-        break;
-      case 'ArrowRight':
-        e.preventDefault();
-        this.lastInteractionType = 'navigation';
-        this.expandCurrentTag();
-        break;
-      case 'Enter':
-        e.preventDefault();
-        // Shift+Enter to exclude current tag
-        if (e.shiftKey) {
-          this.excludeCurrentTag();
-        } else if (this.lastInteractionType === 'navigation') {
-          // Only select tag if last interaction was navigation (arrow keys, tab)
-          this.selectCurrentTag();
-        } else {
-          // If last interaction was search, handle as search enter
-          this.handleSearchEnter();
-        }
-        break;
-      case 'Escape':
-        e.preventDefault();
-        this.focusSearch();
-        break;
-    }
-  }
 
   private focusSearch() {
-    this.focusMode = 'search';
-    this.focusedTagIndex = -1;
-    this.focusedResultIndex = -1;
+    this.keyboardNavigator.focusSearch();
     this.searchInput.focus();
     this.updateFocusVisuals();
   }
 
   private focusFirstTag() {
-    this.focusMode = 'tags';
-    this.focusedTagIndex = 0;
-    this.focusedResultIndex = -1;
+    this.keyboardNavigator.focusFirstTag();
     this.updateFocusVisuals();
   }
 
   private focusResults() {
-    this.focusMode = 'results';
-    this.focusedTagIndex = -1;
-    this.focusedResultIndex = 0;
+    this.keyboardNavigator.focusResults();
     this.updateFocusVisuals();
   }
 
-  private handleResultsKeyDown(e: KeyboardEvent) {
-    switch (e.key) {
-      case 'Tab':
-        e.preventDefault();
-        this.lastInteractionType = 'navigation';
-        if (e.shiftKey) {
-          this.focusFirstTag();
-        } else {
-          this.focusSearch();
-        }
-        break;
-      case 'ArrowUp':
-        e.preventDefault();
-        this.lastInteractionType = 'navigation';
-        this.focusPreviousResult();
-        break;
-      case 'ArrowDown':
-        e.preventDefault();
-        this.lastInteractionType = 'navigation';
-        this.focusNextResult();
-        break;
-      case 'Enter':
-        e.preventDefault();
-        this.lastInteractionType = 'navigation';
-        if (e.shiftKey) {
-          // Shift+Enter in results doesn't make sense for file opening
-          // Just ignore it and do nothing
-          return;
-        }
-        this.openCurrentResult();
-        break;
-      case 'Escape':
-        e.preventDefault();
-        this.focusSearch();
-        break;
-    }
-  }
+
 
   private focusNextResult() {
     const resultItems = this.resultsEl.querySelectorAll('.result-item');
-    if (resultItems.length === 0) return;
-    this.focusedResultIndex = Math.min(this.focusedResultIndex + 1, resultItems.length - 1);
+    this.keyboardNavigator.focusNextResult(resultItems.length);
     this.updateFocusVisuals();
     this.scrollToFocusedResult();
   }
 
   private focusPreviousResult() {
-    const resultItems = this.resultsEl.querySelectorAll('.result-item');
-    if (resultItems.length === 0) return;
-    this.focusedResultIndex = Math.max(this.focusedResultIndex - 1, 0);
+    this.keyboardNavigator.focusPreviousResult();
     this.updateFocusVisuals();
     this.scrollToFocusedResult();
   }
 
   private openCurrentResult() {
-    if (this.focusedResultIndex >= 0) {
+    const focusedResultIndex = this.keyboardNavigator.getFocusedResultIndex();
+    if (focusedResultIndex >= 0) {
       const resultItems = this.resultsEl.querySelectorAll('.result-item');
-      if (this.focusedResultIndex < resultItems.length) {
-        const link = resultItems[this.focusedResultIndex].querySelector('a');
+      if (focusedResultIndex < resultItems.length) {
+        const link = resultItems[focusedResultIndex].querySelector('a');
         if (link) {
           link.click();
         }
@@ -738,72 +493,60 @@ export class FacetNavigatorView extends ItemView {
   }
 
   private scrollToFocusedResult() {
-    if (this.focusedResultIndex >= 0) {
+    const focusedResultIndex = this.keyboardNavigator.getFocusedResultIndex();
+    if (focusedResultIndex >= 0) {
       const resultItems = this.resultsEl.querySelectorAll('.result-item');
-      if (this.focusedResultIndex < resultItems.length) {
-        resultItems[this.focusedResultIndex].scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      if (focusedResultIndex < resultItems.length) {
+        resultItems[focusedResultIndex].scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       }
     }
   }
 
   private focusNextTag() {
-    if (this.allVisibleTags.length === 0) return;
-    this.focusedTagIndex = Math.min(this.focusedTagIndex + 1, this.allVisibleTags.length - 1);
+    this.keyboardNavigator.focusNextTag();
     this.updateFocusVisuals();
     this.scrollToFocusedTag();
   }
 
   private focusPreviousTag() {
-    if (this.allVisibleTags.length === 0) return;
-    this.focusedTagIndex = Math.max(this.focusedTagIndex - 1, 0);
+    this.keyboardNavigator.focusPreviousTag();
     this.updateFocusVisuals();
     this.scrollToFocusedTag();
   }
 
   private expandCurrentTag() {
-    if (this.focusedTagIndex >= 0 && this.focusedTagIndex < this.allVisibleTags.length) {
-      const node = this.allVisibleTags[this.focusedTagIndex];
-      if (node.children.size > 0 && !node.expanded) {
-        node.expanded = true;
-        this.saveExpansionState(node);
-        this.renderCoTags();
-      }
+    const focusedTag = this.keyboardNavigator.getCurrentFocusedTag();
+    if (focusedTag && focusedTag.children.size > 0 && !focusedTag.expanded) {
+      focusedTag.expanded = true;
+      this.expansionManager.saveExpansionState(focusedTag);
+      this.renderCoTags();
     }
   }
 
   private collapseCurrentTag() {
-    if (this.focusedTagIndex >= 0 && this.focusedTagIndex < this.allVisibleTags.length) {
-      const node = this.allVisibleTags[this.focusedTagIndex];
-      if (node.children.size > 0 && node.expanded) {
-        node.expanded = false;
-        this.saveExpansionState(node);
-        this.renderCoTags();
-      }
+    const focusedTag = this.keyboardNavigator.getCurrentFocusedTag();
+    if (focusedTag && focusedTag.children.size > 0 && focusedTag.expanded) {
+      focusedTag.expanded = false;
+      this.expansionManager.saveExpansionState(focusedTag);
+      this.renderCoTags();
     }
   }
 
   private selectCurrentTag() {
-    if (this.focusedTagIndex >= 0 && this.focusedTagIndex < this.allVisibleTags.length) {
-      const node = this.allVisibleTags[this.focusedTagIndex];
-      const selectedTag = normalizeTag(node.full);
-      
-      if (node.children.size > 0) {
+    const focusedTag = this.keyboardNavigator.getCurrentFocusedTag();
+    if (focusedTag) {
+      if (focusedTag.children.size > 0) {
         // Parent tag - add as prefix
-        const mode: TagMatchMode = "prefix";
-        this.selected.set(selectedTag, mode);
+        this.facetManager.addFacet(focusedTag.full, this.settings.includeDescendantsByDefault,
+          (t) => this.facetManager.hasTagChildren(t, this.indexer.allTags()));
       } else {
         // Leaf tag - add as exact
-        const mode: TagMatchMode = "exact";
-        this.selected.set(selectedTag, mode);
+        this.facetManager.addFacetExact(focusedTag.full);
       }
       
       // Store current focus info before refresh
-      const currentFocusTag = node.full;
-      const currentFocusIndex = this.focusedTagIndex;
-      
-      // Clear search when selecting a tag
-      this.searchQuery = "";
-      if (this.searchInput) this.searchInput.value = "";
+      const currentFocusTag = focusedTag.full;
+      const currentFocusIndex = this.keyboardNavigator.getFocusedTagIndex();
       
       // Refresh and then try to restore focus
       this.refresh();
@@ -812,16 +555,16 @@ export class FacetNavigatorView extends ItemView {
   }
 
   private excludeCurrentTag() {
-    if (this.focusedTagIndex >= 0 && this.focusedTagIndex < this.allVisibleTags.length) {
-      const node = this.allVisibleTags[this.focusedTagIndex];
-      const tagToExclude = normalizeTag(node.full);
+    const focusedTag = this.keyboardNavigator.getCurrentFocusedTag();
+    if (focusedTag) {
+      const tagToExclude = normalizeTag(focusedTag.full);
       
       // Store current focus info before refresh
-      const currentFocusTag = node.full;
-      const currentFocusIndex = this.focusedTagIndex;
+      const currentFocusTag = focusedTag.full;
+      const currentFocusIndex = this.keyboardNavigator.getFocusedTagIndex();
       
       // Toggle exclusion (same as Alt+click behavior)
-      this.toggleExcluded(tagToExclude);
+      this.facetManager.toggleExcluded(tagToExclude);
       
       // Focus preservation is handled by toggleExcluded -> refresh
       // But we still need to restore focus after the refresh
@@ -840,14 +583,15 @@ export class FacetNavigatorView extends ItemView {
     }
     
     // Check for exact match
-    const exactMatch = this.allVisibleTags.find(tag => tag.full === this.searchQuery);
+    const allVisibleTags = this.keyboardNavigator.getVisibleTags();
+    const exactMatch = allVisibleTags.find(tag => tag.full === this.searchQuery);
     if (exactMatch) {
       this.selectTagNode(exactMatch);
       return;
     }
     
     // Check for single match
-    const matches = this.allVisibleTags.filter(tag => 
+    const matches = allVisibleTags.filter(tag => 
       tag.full.toLowerCase().includes(this.searchQuery.toLowerCase())
     );
     
@@ -896,10 +640,7 @@ export class FacetNavigatorView extends ItemView {
   }
 
   private expandAllTags() {
-    // Set all expansion states to true
-    for (const [tagPath] of this.expansionState) {
-      this.expansionState.set(tagPath, true);
-    }
+    this.expansionManager.expandAll();
     
     // Update button text
     if (this.btnToggleExpansion) {
@@ -913,10 +654,7 @@ export class FacetNavigatorView extends ItemView {
   }
 
   private collapseAllTags() {
-    // Set all expansion states to false
-    for (const [tagPath] of this.expansionState) {
-      this.expansionState.set(tagPath, false);
-    }
+    this.expansionManager.collapseAll();
     
     // Update button text
     if (this.btnToggleExpansion) {
@@ -929,53 +667,35 @@ export class FacetNavigatorView extends ItemView {
     this.renderCoTags();
   }
 
-  private updateSlashCommandHint(query: string) {
-    const availableCommands = ['/clear', '/expand', '/collapse'];
-    const matches = availableCommands.filter(cmd => cmd.startsWith(query.toLowerCase()));
-    
-    if (matches.length === 1) {
-      // Show completion hint
-      this.searchInput.placeholder = `${matches[0]} - Press Enter to execute`;
-    } else if (matches.length > 1) {
-      // Show available options
-      this.searchInput.placeholder = `Available: ${matches.join(', ')}`;
-    } else {
-      // Show all commands if no matches
-      this.searchInput.placeholder = `Commands: ${availableCommands.join(', ')}`;
-    }
-  }
+
 
   private selectTagNode(node: TagTreeNode) {
     if (node.children.size > 0) {
       // Parent tag - add as prefix
-      const mode: TagMatchMode = "prefix";
-      this.selected.set(normalizeTag(node.full), mode);
+      this.facetManager.addFacet(node.full, this.settings.includeDescendantsByDefault,
+        (t) => this.facetManager.hasTagChildren(t, this.indexer.allTags()));
     } else {
       // Leaf tag - add as exact
-      const mode: TagMatchMode = "exact";
-      this.selected.set(normalizeTag(node.full), mode);
+      this.facetManager.addFacetExact(node.full);
     }
-    // Clear search when selecting a tag
-    this.searchQuery = "";
-    if (this.searchInput) this.searchInput.value = "";
-    this.refresh();
   }
 
   private restoreFocusAfterSelection(previousFocusTag: string, previousFocusIndex: number) {
     // Try to find the same tag in the new list
-    const newIndex = this.allVisibleTags.findIndex(tag => tag.full === previousFocusTag);
+    const allVisibleTags = this.keyboardNavigator.getVisibleTags();
+    const newIndex = allVisibleTags.findIndex(tag => tag.full === previousFocusTag);
     
     if (newIndex >= 0) {
       // Same tag found, focus it
-      this.focusedTagIndex = newIndex;
+      this.keyboardNavigator.setFocusedTagIndex(newIndex);
     } else {
       // Tag no longer available, try to focus a reasonable alternative
-      if (this.allVisibleTags.length > 0) {
+      if (allVisibleTags.length > 0) {
         // Try to keep similar index position, but clamp to available range
-        this.focusedTagIndex = Math.min(previousFocusIndex, this.allVisibleTags.length - 1);
+        this.keyboardNavigator.setFocusedTagIndex(Math.min(previousFocusIndex, allVisibleTags.length - 1));
       } else {
         // No tags available, clear focus
-        this.focusedTagIndex = -1;
+        this.keyboardNavigator.setFocusedTagIndex(-1);
       }
     }
     
@@ -994,8 +714,12 @@ export class FacetNavigatorView extends ItemView {
     });
     
     // Add focus to current tag
-    if (this.focusMode === 'tags' && this.focusedTagIndex >= 0 && this.focusedTagIndex < this.allVisibleTags.length) {
-      const focusedTag = this.allVisibleTags[this.focusedTagIndex];
+    const focusMode = this.keyboardNavigator.getFocusMode();
+    const focusedTagIndex = this.keyboardNavigator.getFocusedTagIndex();
+    
+    const allVisibleTags = this.keyboardNavigator.getVisibleTags();
+    if (focusMode === 'tags' && focusedTagIndex >= 0 && focusedTagIndex < allVisibleTags.length) {
+      const focusedTag = allVisibleTags[focusedTagIndex];
       const tagRow = this.coTagsEl.querySelector(`[data-tag="${focusedTag.full}"]`);
       if (tagRow) {
         tagRow.classList.add('focused');
@@ -1003,17 +727,20 @@ export class FacetNavigatorView extends ItemView {
     }
     
     // Add focus to current result
-    if (this.focusMode === 'results' && this.focusedResultIndex >= 0) {
+    const focusedResultIndex = this.keyboardNavigator.getFocusedResultIndex();
+    if (focusMode === 'results' && focusedResultIndex >= 0) {
       const resultItems = this.resultsEl.querySelectorAll('.result-item');
-      if (this.focusedResultIndex < resultItems.length) {
-        resultItems[this.focusedResultIndex].classList.add('focused');
+      if (focusedResultIndex < resultItems.length) {
+        resultItems[focusedResultIndex].classList.add('focused');
       }
     }
   }
 
   private scrollToFocusedTag() {
-    if (this.focusedTagIndex >= 0 && this.focusedTagIndex < this.allVisibleTags.length) {
-      const focusedTag = this.allVisibleTags[this.focusedTagIndex];
+    const focusedTagIndex = this.keyboardNavigator.getFocusedTagIndex();
+    const allVisibleTags = this.keyboardNavigator.getVisibleTags();
+    if (focusedTagIndex >= 0 && focusedTagIndex < allVisibleTags.length) {
+      const focusedTag = allVisibleTags[focusedTagIndex];
       const tagRow = this.coTagsEl.querySelector(`[data-tag="${focusedTag.full}"]`);
       if (tagRow) {
         tagRow.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -1023,13 +750,13 @@ export class FacetNavigatorView extends ItemView {
 
   private toggleAllExpansion(button: HTMLElement) {
     // Determine current state - if most nodes are expanded, we'll collapse all, otherwise expand all
-    const expandedCount = Array.from(this.expansionState.values()).filter(Boolean).length;
-    const totalCount = this.expansionState.size;
-    const shouldCollapse = expandedCount > totalCount / 2;
+    const shouldCollapse = this.expansionManager.isMostlyExpanded();
     
     // Set all expansion states
-    for (const [tagPath] of this.expansionState) {
-      this.expansionState.set(tagPath, !shouldCollapse);
+    if (shouldCollapse) {
+      this.expansionManager.collapseAll();
+    } else {
+      this.expansionManager.expandAll();
     }
     
     // Update button text
@@ -1042,15 +769,18 @@ export class FacetNavigatorView extends ItemView {
   private renderCoTags() {
     this.coTagsEl.empty();
 
+    const selected = this.facetManager.getSelected();
+    const excluded = this.facetManager.getExcluded();
+
     // Build frequency map excluding selected and excluded facets
-    const exclude = new Set([...this.selected.keys(), ...this.excluded]);
+    const exclude = new Set([...selected.keys(), ...excluded]);
     
     // Get initial co-tag frequencies
     let coFreq = this.indexer.coTagFrequencies(this.currentFiles, exclude);
     
     // Also exclude any tags that are descendants of excluded tags
     const additionalExclusions = new Set<string>();
-    for (const excludedTag of this.excluded) {
+    for (const excludedTag of excluded) {
       for (const [tag] of coFreq) {
         if (tag.startsWith(excludedTag + "/")) {
           additionalExclusions.add(tag);
@@ -1066,313 +796,43 @@ export class FacetNavigatorView extends ItemView {
       coFreq = this.indexer.coTagFrequencies(this.currentFiles, exclude);
     }
     
-    if (coFreq.size === 0) {
-      this.coTagsEl.createDiv({ text: "No co-tags. Adjust selection.", cls: "muted" });
-      return;
-    }
+    // Use the tag renderer to render the co-tags
+    const allVisibleTags = this.tagRenderer.renderCoTags(
+      this.coTagsEl,
+      coFreq,
+      this.searchQuery,
+      this.expansionManager,
+      this.settings.coTagSort
+    );
 
-    // Filter by search query if present
-    let filteredFreq = coFreq;
-    if (this.searchQuery) {
-      filteredFreq = new Map();
-      for (const [tag, count] of coFreq) {
-        if (tag.toLowerCase().includes(this.searchQuery.toLowerCase())) {
-          filteredFreq.set(tag, count);
-        }
-      }
-      if (filteredFreq.size === 0) {
-        this.coTagsEl.createDiv({ text: "No tags match the search query.", cls: "muted" });
-        return;
-      }
-    }
-
-    // Build the tree from ALL tags to ensure parent nodes are created
-    const freq = filteredFreq; // Map<string, number> of *normalized* tags
-    const treeRoots = buildTagTree(freq, "/");
-    
-    // Restore expansion state after building the tree
-    this.restoreExpansionState(treeRoots);
-
-    // Build flat list of all visible tags for keyboard navigation
-    this.allVisibleTags = [];
-    const collectVisibleTags = (node: TagTreeNode) => {
-      this.allVisibleTags.push(node);
-      if (node.children.size > 0 && node.expanded) {
-        for (const child of sortNodes(node.children.values(), this.settings.coTagSort)) {
-          collectVisibleTags(child);
-        }
-      }
-    };
-    
-    // Render all tags in a single unified list
-    if (treeRoots.size > 0) {
-      const allNodes = Array.from(treeRoots.values());
-      const sortedNodes = sortNodes(allNodes, this.settings.coTagSort);
-      // Only expand by default when actively searching
-      const expandDefault = Boolean(this.searchQuery);
-      
-      for (const node of sortedNodes) {
-        this.renderTreeNode(this.coTagsEl, node, 0, expandDefault);
-        collectVisibleTags(node);
-      }
-    }
+    // Update keyboard navigator with visible tags
+    this.keyboardNavigator.setVisibleTags(allVisibleTags);
     
     // Update focus visuals after rendering
     this.updateFocusVisuals();
   }
 
-  /**
-   * Render a TagTreeNode (and its descendants) as clickable rows.
-   * Carets toggle expansion, labels select tags.
-   */
-  private renderTreeNode(container: HTMLElement, node: TagTreeNode, depth: number, expandDefault: boolean) {
-    const row = container.createDiv({ cls: "tag-row tag-hier" });
-    row.setAttribute("data-depth", String(depth));
-    row.setAttribute("data-tag", node.full);
-    row.classList.toggle("has-children", node.children.size > 0);
 
-    // Initialize expansion state if not set
-    if (node.expanded === undefined) {
-      node.expanded = expandDefault;
-    }
-
-    // Caret only if it has children
-    const hasKids = node.children.size > 0;
-    if (hasKids) {
-      const caret = row.createSpan({ cls: "tag-caret", text: node.expanded ? "▾" : "▸" });
-      caret.addEventListener("click", (e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        // Toggle expansion state
-        node.expanded = !node.expanded;
-        this.saveExpansionState(node);
-
-        this.renderCoTags(); // Re-render just the co-tags section
-      });
-    } else {
-      row.createSpan({ cls: "tag-caret-placeholder", text: "  " });
-    }
-
-    // Label with single-click expand / double-click select behavior
-    const label = row.createSpan({ text: node.label, cls: "tag-label" });
-    
-    if (hasKids) {
-      // For expandable items: single click = expand/collapse, double click = select
-      let clickTimeout: number | null = null;
-      
-      label.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        
-        // Alt+click to exclude
-        if (e.altKey) {
-          this.toggleExcluded(node.full);
-          return;
-        }
-        
-        if (clickTimeout !== null) {
-          // This is part of a double-click, cancel the single-click action
-          clearTimeout(clickTimeout);
-          clickTimeout = null;
-          return;
-        }
-        
-        // Set timeout for single-click action (expand/collapse)
-        clickTimeout = setTimeout(() => {
-          clickTimeout = null;
-          // Toggle expansion
-          node.expanded = !node.expanded;
-          this.saveExpansionState(node);
-          this.renderCoTags();
-        }, 200);
-      });
-      
-      // Double-click to select the tag
-      label.addEventListener("dblclick", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        
-        // Alt+double-click should still exclude, not select
-        if (e.altKey) {
-          this.toggleExcluded(node.full);
-          return;
-        }
-        
-        // Cancel any pending single-click
-        if (clickTimeout !== null) {
-          clearTimeout(clickTimeout);
-          clickTimeout = null;
-        }
-        
-        // Select the tag (prefix mode for parents)
-        const mode: TagMatchMode = "prefix";
-        this.selected.set(normalizeTag(node.full), mode);
-        
-        // Store current focus info before refresh (for mouse clicks)
-        const currentFocusTag = node.full;
-        const currentFocusIndex = this.allVisibleTags.findIndex(tag => tag.full === node.full);
-        
-        // Clear search when selecting a tag
-        this.searchQuery = "";
-        if (this.searchInput) this.searchInput.value = "";
-        this.refresh();
-        
-        // Restore focus after mouse selection
-        if (currentFocusIndex >= 0) {
-          this.restoreFocusAfterSelection(currentFocusTag, currentFocusIndex);
-        }
-      });
-    } else {
-      // For non-expandable items: single click = select
-      label.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        
-        // Alt+click to exclude
-        if (e.altKey) {
-          this.toggleExcluded(node.full);
-          return;
-        }
-        
-        const mode: TagMatchMode = "exact";
-        this.selected.set(normalizeTag(node.full), mode);
-        
-        // Store current focus info before refresh (for mouse clicks)
-        const currentFocusTag = node.full;
-        const currentFocusIndex = this.allVisibleTags.findIndex(tag => tag.full === node.full);
-        
-        // Clear search when selecting a tag
-        this.searchQuery = "";
-        if (this.searchInput) this.searchInput.value = "";
-        this.refresh();
-        
-        // Restore focus after mouse selection
-        if (currentFocusIndex >= 0) {
-          this.restoreFocusAfterSelection(currentFocusTag, currentFocusIndex);
-        }
-      });
-    }
-
-    // IMPORTANT: show rolled-up count
-    const badge = row.createSpan({ cls: "badge", text: String(node.count) });
-
-    // Tooltip shows the full tag path and mode info
-    const exactNote = node.exactCount === 0 ? " (no exact tags; rolled-up)" : "";
-    const modeHint = hasKids 
-      ? "\nSingle-click: expand/collapse\nDouble-click: select branch (prefix match)\nCaret: expand/collapse" 
-      : "\nClick: add as exact match facet";
-    const countInfo = hasKids ? `\nBranch contains ${node.count} total items` : "";
-    const keyboardHints = "\nKeyboard: Enter to select, Shift+Enter to exclude";
-    label.setAttr("title", `${node.full}${exactNote}${countInfo}${modeHint}\nRight-click to toggle exact/prefix mode\nAlt+click to exclude${keyboardHints}`);
-
-    // Right-click to toggle exact/prefix mode
-    row.addEventListener("contextmenu", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      this.toggleFacetMode(node.full);
-    });
-
-    // Recursive rendering for children
-    if (node.children.size > 0 && node.expanded) {
-      const children = sortNodes(node.children.values(), this.settings.coTagSort);
-      for (const child of children) {
-        this.renderTreeNode(container, child, depth + 1, expandDefault);
-      }
-    }
-  }
 
   private renderResults() {
-    this.resultsEl.empty();
-
-    const total = this.currentFiles.size;
-    const head = this.resultsEl.createDiv();
-    head.createEl("h4", { text: `Results (${total})` });
-
-    if (total === 0) {
-      if (this.selected.size === 0 && this.settings.startEmpty) {
-        this.resultsEl.createDiv({ 
-          text: "Select a tag to start browsing. Use the left panel to explore available tags.", 
-          cls: "muted" 
-        });
-      } else {
-        this.resultsEl.createDiv({ text: "No notes match the current facets.", cls: "muted" });
-      }
-      return;
-    }
-
-    // Virtualize results
-    const files = Array.from(this.currentFiles)
-      .map(p => this.app.vault.getAbstractFileByPath(p))
-      .filter((f): f is TFile => f instanceof TFile)
-      .sort((a, b) => a.basename.localeCompare(b.basename));
-
-    const pageSize = this.settings.resultsPageSize;
-    let rendered = 0;
-
-    const renderMore = () => {
-      const end = Math.min(rendered + pageSize, files.length);
-      for (let i = rendered; i < end; i++) {
-        this.renderResultItem(list, files[i]);
-      }
-      rendered = end;
-    };
-
-    const list = this.resultsEl.createDiv();
-    renderMore();
-
-    if (rendered < files.length) {
-      const more = this.resultsEl.createEl("button", { 
-        text: `Load more (${files.length - rendered})`,
-        cls: "load-more-btn"
-      });
-      more.onclick = () => { 
-        more.remove(); 
-        renderMore(); 
-        if (rendered < files.length) {
-          this.resultsEl.append(more);
-        }
-      };
-    }
+    const selected = this.facetManager.getSelected();
+    this.resultsRenderer.renderResults(
+      this.resultsEl,
+      this.currentFiles,
+      selected.size,
+      this.settings.startEmpty,
+      this.settings.resultsPageSize
+    );
   }
 
-  private renderResultItem(container: HTMLElement, file: TFile) {
-    const item = container.createDiv({ cls: "result-item" });
-    
-    const link = item.createEl("a", { text: file.basename, href: "#" });
-    link.addEventListener("click", (e) => {
-      e.preventDefault();
-      this.app.workspace.getLeaf(true).openFile(file);
-    });
 
-    const meta = item.createDiv({ cls: "result-meta" });
-    meta.setText(`${file.path}`);
-
-    // Show tags for this file
-    const fileTags = this.indexer.exactTagsForFile(file.path);
-    if (fileTags.size > 0) {
-      const tagsContainer = item.createDiv({ cls: "file-tags" });
-      for (const tag of Array.from(fileTags).slice(0, 5)) { // Limit to 5 tags
-        const tagChip = tagsContainer.createSpan({ text: tag, cls: "file-tag" });
-        tagChip.addEventListener("click", (e) => {
-          if (e.altKey) {
-            e.preventDefault();
-            e.stopPropagation();
-            this.toggleExcluded(tag);
-          } else {
-            this.addFacet(tag);
-          }
-        });
-        tagChip.setAttr("title", `Click to add ${tag} as a facet\nAlt+click to exclude`);
-      }
-      if (fileTags.size > 5) {
-        tagsContainer.createSpan({ text: `+${fileTags.size - 5} more`, cls: "more-tags" });
-      }
-    }
-  }
 
   /** Persist current selection as a Saved View */
   private saveView() {
-    const tags = Array.from(this.selected.keys());
+    const selected = this.facetManager.getSelected();
+    const excluded = this.facetManager.getExcluded();
+    const tags = Array.from(selected.keys());
+    
     if (tags.length === 0) { 
       new Notice("Select at least one tag."); 
       return; 
@@ -1384,14 +844,14 @@ export class FacetNavigatorView extends ItemView {
       const existing = this.settings.savedViews.find(v => v.name === name);
       if (existing) {
         existing.tags = tags;
-        if (this.excluded.size > 0) {
-          existing.exclude = Array.from(this.excluded);
+        if (excluded.size > 0) {
+          existing.exclude = Array.from(excluded);
         }
       } else {
         const newView: SavedView = { 
           name, 
           tags,
-          exclude: this.excluded.size > 0 ? Array.from(this.excluded) : undefined
+          exclude: excluded.size > 0 ? Array.from(excluded) : undefined
         };
         this.settings.savedViews.push(newView);
       }
@@ -1405,16 +865,19 @@ export class FacetNavigatorView extends ItemView {
 
   /** Generate a core search query */
   private exportQuery() {
-    if (this.selected.size === 0) { 
+    const selected = this.facetManager.getSelected();
+    const excluded = this.facetManager.getExcluded();
+    
+    if (selected.size === 0) { 
       new Notice("No facets selected."); 
       return; 
     }
     
-    const included = Array.from(this.selected.entries())
+    const included = Array.from(selected.entries())
       .map(([tag, mode]) => mode === "exact" ? `tag:#${tag}` : `tag:#${tag}*`);
-    const excluded = Array.from(this.excluded).map(tag => `-tag:#${tag}`);
+    const excludedArray = Array.from(excluded).map(tag => `-tag:#${tag}`);
     
-    const q = [...included, ...excluded].join(" ");
+    const q = [...included, ...excludedArray].join(" ");
     navigator.clipboard.writeText(q).catch(() => {/* ignore */});
     new Notice("Copied search query to clipboard.");
   }
@@ -1433,33 +896,7 @@ export class FacetNavigatorView extends ItemView {
 
   /** Check if a tag node or any of its descendants are currently selected */
   private hasSelectedDescendants(node: TagTreeNode): boolean {
-    // Check if this exact tag is selected
-    if (this.selected.has(node.full) || this.excluded.has(node.full)) {
-      return true;
-    }
-    
-    // Check if any descendant tags are selected
-    for (const [selectedTag] of this.selected) {
-      if (selectedTag.startsWith(node.full + "/")) {
-        return true;
-      }
-    }
-    
-    // Check if any excluded tags are descendants
-    for (const excludedTag of this.excluded) {
-      if (excludedTag.startsWith(node.full + "/")) {
-        return true;
-      }
-    }
-    
-    // Recursively check children
-    for (const child of node.children.values()) {
-      if (this.hasSelectedDescendants(child)) {
-        return true;
-      }
-    }
-    
-    return false;
+    return this.facetManager.hasSelectedDescendants(node);
   }
 }
 
