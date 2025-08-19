@@ -318,13 +318,31 @@ export class FacetNavigatorView extends ItemView {
           this.currentFiles.add(file.path);
         }
       }
+    }
+
+    // Apply exclusions regardless of whether there are selected tags or not
+    if (this.excluded.size > 0) {
+      const allFiles = this.app.vault.getMarkdownFiles();
+      const filesToRemove = new Set<string>();
       
-      // Subtract excluded files
-      if (this.excluded.size > 0) {
-        const excludedFiles = this.indexer.filesWithAll(Array.from(this.excluded), new Set());
-        for (const fileId of excludedFiles) {
-          this.currentFiles.delete(fileId);
+      for (const file of allFiles) {
+        const fileTags = Array.from(this.indexer.exactTagsForFile(file.path));
+        
+        // Check if any file tag matches or is a descendant of excluded tags
+        for (const excludedTag of this.excluded) {
+          for (const fileTag of fileTags) {
+            if (fileTag === excludedTag || fileTag.startsWith(excludedTag + "/")) {
+              filesToRemove.add(file.path);
+              break;
+            }
+          }
+          if (filesToRemove.has(file.path)) break;
         }
+      }
+      
+      // Remove excluded files from current set
+      for (const fileId of filesToRemove) {
+        this.currentFiles.delete(fileId);
       }
     }
 
@@ -1026,7 +1044,27 @@ export class FacetNavigatorView extends ItemView {
 
     // Build frequency map excluding selected and excluded facets
     const exclude = new Set([...this.selected.keys(), ...this.excluded]);
-    const coFreq = this.indexer.coTagFrequencies(this.currentFiles, exclude);
+    
+    // Get initial co-tag frequencies
+    let coFreq = this.indexer.coTagFrequencies(this.currentFiles, exclude);
+    
+    // Also exclude any tags that are descendants of excluded tags
+    const additionalExclusions = new Set<string>();
+    for (const excludedTag of this.excluded) {
+      for (const [tag] of coFreq) {
+        if (tag.startsWith(excludedTag + "/")) {
+          additionalExclusions.add(tag);
+        }
+      }
+    }
+    
+    // If we found additional exclusions, rebuild the frequency map
+    if (additionalExclusions.size > 0) {
+      for (const tag of additionalExclusions) {
+        exclude.add(tag);
+      }
+      coFreq = this.indexer.coTagFrequencies(this.currentFiles, exclude);
+    }
     
     if (coFreq.size === 0) {
       this.coTagsEl.createDiv({ text: "No co-tags. Adjust selection.", cls: "muted" });
