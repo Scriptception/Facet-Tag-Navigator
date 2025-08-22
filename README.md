@@ -17,6 +17,7 @@ Instead of searching through flat tag lists, this plugin gives you a flexible wa
 - **Saved Views** – Save and restore complex tag combinations
 - **Performance Optimized** – Efficient indexing and updates for large vaults
 - **Customizable Settings** – Tune behavior to your preferences
+- **Folder Exclusion** – Exclude entire folders from indexing and results
 
 ---
 
@@ -39,6 +40,12 @@ Instead of searching through flat tag lists, this plugin gives you a flexible wa
 - **Nested Mode** (default): Includes all descendant tags (e.g., `topic/ctf` matches `topic/ctf/hackthebox`)
 - **Exact Mode**: Only matches the exact tag specified
 - **NOT Facets**: Excludes notes with specific tags
+
+### Folder Exclusion
+- **Exclude Folders**: Use the settings panel to select folders that should be ignored by the plugin
+- **Multi-Select Modal**: Click "Select folders…" to open a searchable modal for choosing folders to exclude
+- **Real-time Updates**: Changes take effect immediately and the index is rebuilt automatically
+- **Persistent Settings**: Your folder exclusions are saved and restored between sessions
 
 ---
 
@@ -72,6 +79,7 @@ Access settings via **Settings > Community plugins > Facet Tag Navigator**:
 - **Results page size**: How many results to show per page
 - **Show namespace headers**: Display namespace headers in the co-tags panel
 - **Start empty**: Don't show all files when no facets are selected (better performance)
+- **Excluded folders**: Select folders to exclude from indexing and results
 
 ---
 

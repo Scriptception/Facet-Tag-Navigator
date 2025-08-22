@@ -23,5 +23,6 @@ export interface FacetNavigatorSettings {
   resultsPageSize: number;          // how many results to show per page
   showNamespaceHeaders: boolean;    // whether to show namespace headers in co-tags
   startEmpty: boolean;              // don't compute global union when no facets selected
+  excludedFolders: string[];        // folders to exclude from indexing and results
 }
 

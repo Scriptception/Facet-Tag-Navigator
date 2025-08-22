@@ -4,6 +4,7 @@ import { TagIndexer } from "./TagIndexer";
 import { FacetNavigatorSettings, SavedView } from "./types";
 import { SavedViewPicker } from "./SavedViewPicker";
 import { InputModal } from "./InputModal";
+import { FolderMultiSelectModal } from "./FolderMultiSelectModal";
 
 const DEFAULT_SETTINGS: FacetNavigatorSettings = {
   savedViews: [],
@@ -14,7 +15,8 @@ const DEFAULT_SETTINGS: FacetNavigatorSettings = {
   coTagSort: "count",
   resultsPageSize: 200,
   showNamespaceHeaders: true,
-  startEmpty: false
+  startEmpty: false,
+  excludedFolders: []
 };
 
 export default class FacetNavigatorPlugin extends Plugin {
@@ -157,6 +159,16 @@ export default class FacetNavigatorPlugin extends Plugin {
     await this.saveData(this.settings);
   }
 
+  async rebuildIndex() {
+    if (this.indexer) {
+      await this.indexer.rebuild();
+      // Refresh active views when index updates
+      this.app.workspace.getLeavesOfType(VIEW_TYPE_FACET_NAV).forEach(leaf => {
+        const view = leaf.view as FacetNavigatorView;
+        view?.refresh();
+      });
+    }
+  }
 
 
   private async quickPrompt(label: string, hint?: string): Promise<string | null> {
@@ -312,6 +324,65 @@ class FacetSettingsTab extends PluginSettingTab {
           this.plugin.settings.startEmpty = v; 
           await this.plugin.saveSettings(); 
         }));
+
+    // Folder exclusion setting
+    new Setting(containerEl)
+      .setName("Excluded folders")
+      .setDesc("These folders will be ignored by the plugin.")
+      .addButton(btn =>
+        btn.setButtonText("Select folders…").onClick(async () => {
+          const modal = new FolderMultiSelectModal(
+            this.app,
+            this.plugin.settings.excludedFolders,
+            async (selected) => {
+              this.plugin.settings.excludedFolders = selected;
+              await this.plugin.saveSettings();
+              // Rebuild index to reflect folder exclusions
+              await this.plugin.rebuildIndex();
+              this.display();
+            }
+          );
+          modal.open();
+        })
+      );
+
+    // Show pills under the setting
+    const pillHost = containerEl.createDiv({ cls: "setting-item-description" });
+    this.renderExcludedFolderPills(pillHost, this.plugin.settings.excludedFolders);
+
+    // Optional: light styles for pills
+    const style = document.createElement("style");
+    style.textContent = `
+      .excluded-folders-pills { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+      .excluded-folders-pills .pill {
+        background: var(--background-modifier-border);
+        border: 1px solid var(--background-modifier-border);
+        border-radius: 999px; padding: 2px 8px; display: inline-flex; gap: 6px; align-items:center;
+      }
+      .excluded-folders-pills .pill-x { cursor: pointer; opacity: 0.7; }
+      .excluded-folders-pills .pill-x:hover { opacity: 1; }
+    `;
+    containerEl.appendChild(style);
+  }
+
+  private renderExcludedFolderPills(parent: HTMLElement, paths: string[]) {
+    const wrap = parent.createDiv({ cls: "excluded-folders-pills" });
+    if (!paths.length) {
+      wrap.createSpan({ text: "No folders excluded." });
+      return;
+    }
+    for (const p of paths) {
+      const pill = wrap.createSpan({ cls: "pill" });
+      pill.createSpan({ text: p });
+      const x = pill.createSpan({ cls: "pill-x", text: "×" });
+      x.onclick = async () => {
+        this.plugin.settings.excludedFolders = this.plugin.settings.excludedFolders.filter(s => s !== p);
+        await this.plugin.saveSettings();
+        // Rebuild index to reflect folder exclusions
+        await this.plugin.rebuildIndex();
+        this.display();
+      };
+    }
   }
 }
 

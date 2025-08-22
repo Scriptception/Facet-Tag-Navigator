@@ -293,10 +293,9 @@ export class FacetNavigatorView extends ItemView {
       return;
     }
 
-    // Compute result set from selected facets
     const selected = this.facetManager.getSelected();
     const excluded = this.facetManager.getExcluded();
-    
+
     if (selected.size === 0) {
       if (this.settings.startEmpty) {
         // Show no results, just co-tag panel derived from allTags()
@@ -319,6 +318,11 @@ export class FacetNavigatorView extends ItemView {
       this.currentFiles = new Set();
       
       for (const file of allFiles) {
+        // Skip files in excluded folders
+        if (this.isFileInExcludedFolder(file.path)) {
+          continue;
+        }
+        
         const fileTags = Array.from(this.indexer.exactTagsForFile(file.path));
         if (this.facetManager.fileMatches(filters, fileTags)) {
           this.currentFiles.add(file.path);
@@ -332,6 +336,11 @@ export class FacetNavigatorView extends ItemView {
       const filesToRemove = new Set<string>();
       
       for (const file of allFiles) {
+        // Skip files in excluded folders
+        if (this.isFileInExcludedFolder(file.path)) {
+          continue;
+        }
+        
         const fileTags = Array.from(this.indexer.exactTagsForFile(file.path));
         
         // Check if any file tag matches or is a descendant of excluded tags
@@ -355,6 +364,16 @@ export class FacetNavigatorView extends ItemView {
     this.renderBar();
     this.renderCoTags();
     this.renderResults();
+  }
+
+  private isFileInExcludedFolder(filePath: string): boolean {
+    const excludedFolders = this.settings.excludedFolders || [];
+    for (const excludedFolder of excludedFolders) {
+      if (filePath.startsWith(excludedFolder + "/") || filePath === excludedFolder) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private renderBar() {

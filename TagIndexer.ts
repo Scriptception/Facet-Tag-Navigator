@@ -24,8 +24,29 @@ export class TagIndexer {
     this.exactTagToFiles.clear();
     this.tagToFiles.clear();
     this.fileToExactTags.clear();
-    for (const f of this.app.vault.getMarkdownFiles()) this.indexFile(f);
+    
+    // Get excluded folders from plugin settings
+    const excludedFolders = (this.plugin as any).settings?.excludedFolders || [];
+    const excludedSet = new Set<string>(excludedFolders);
+    
+    for (const f of this.app.vault.getMarkdownFiles()) {
+      // Skip files in excluded folders
+      if (this.isFileInExcludedFolder(f.path, excludedSet)) {
+        continue;
+      }
+      this.indexFile(f);
+    }
     this.ready = true;
+  }
+
+  private isFileInExcludedFolder(filePath: string, excludedFolders: Set<string>): boolean {
+    // Check if the file is in any excluded folder
+    for (const excludedFolder of excludedFolders) {
+      if (filePath.startsWith(excludedFolder + "/") || filePath === excludedFolder) {
+        return true;
+      }
+    }
+    return false;
   }
 
   attachWatchers(onReady: () => void) {
@@ -38,6 +59,17 @@ export class TagIndexer {
     // File changed
     this.plugin.registerEvent(mc.on("changed", (file) => {
       if (!(file instanceof TFile) || file.extension !== "md") return;
+      
+      // Check if file is in excluded folder
+      const excludedFolders = (this.plugin as any).settings?.excludedFolders || [];
+      const excludedSet = new Set<string>(excludedFolders);
+      if (this.isFileInExcludedFolder(file.path, excludedSet)) {
+        // Remove from index if it was previously indexed
+        this.removeFile(file.path);
+        onReady();
+        return;
+      }
+      
       this.indexFile(file);
       onReady();
     }));
@@ -52,6 +84,14 @@ export class TagIndexer {
     // File created
     this.plugin.registerEvent(vault.on("create", (f) => {
       if (!(f instanceof TFile) || f.extension !== "md") return;
+      
+      // Check if file is in excluded folder
+      const excludedFolders = (this.plugin as any).settings?.excludedFolders || [];
+      const excludedSet = new Set<string>(excludedFolders);
+      if (this.isFileInExcludedFolder(f.path, excludedSet)) {
+        return; // Don't index excluded files
+      }
+      
       this.indexFile(f);
       onReady();
     }));
@@ -59,7 +99,18 @@ export class TagIndexer {
     // File renamed
     this.plugin.registerEvent(vault.on("rename", (f, oldPath) => {
       if (!(f instanceof TFile) || f.extension !== "md") return;
+      
+      // Remove old path from index
       this.removeFile(oldPath);
+      
+      // Check if new file is in excluded folder
+      const excludedFolders = (this.plugin as any).settings?.excludedFolders || [];
+      const excludedSet = new Set<string>(excludedFolders);
+      if (this.isFileInExcludedFolder(f.path, excludedSet)) {
+        onReady();
+        return; // Don't index excluded files
+      }
+      
       this.indexFile(f);
       onReady();
     }));
