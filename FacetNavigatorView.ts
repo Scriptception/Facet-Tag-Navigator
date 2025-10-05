@@ -164,19 +164,42 @@ export class FacetNavigatorView extends ItemView {
     this.controlsEl = scroll.createDiv({ cls: "facet-controls" });
 
     // Controls: Save View / Export / Clear / Collapse Toggle
-    const btnSave = this.controlsEl.createEl("button", { text: "Save View" });
+    const btnSave = this.controlsEl.createEl("button", { 
+      text: "💾", 
+      title: "Save View",
+      attr: { "data-tooltip": "Save View" }
+    });
     btnSave.addEventListener("click", () => this.saveView());
-    const btnExport = this.controlsEl.createEl("button", { text: "Export Query" });
+    
+    const btnExport = this.controlsEl.createEl("button", { 
+      text: "📤", 
+      title: "Export Query",
+      attr: { "data-tooltip": "Export Query" }
+    });
     btnExport.addEventListener("click", () => this.exportQuery());
-    const btnClear = this.controlsEl.createEl("button", { text: "Clear" });
+    
+    const btnClear = this.controlsEl.createEl("button", { 
+      text: "🗑️", 
+      title: "Clear All",
+      attr: { "data-tooltip": "Clear All" }
+    });
     btnClear.addEventListener("click", () => this.clearAll());
     
     // Collapse/Expand All toggle
-    this.btnToggleExpansion = this.controlsEl.createEl("button", { text: "Expand All" });
+    this.btnToggleExpansion = this.controlsEl.createEl("button", { 
+      text: "📂", 
+      title: "Expand All",
+      attr: { "data-tooltip": "Expand All" }
+    });
     this.btnToggleExpansion.addEventListener("click", () => this.toggleAllExpansion(this.btnToggleExpansion));
 
     // Mobile-only filters toggle
-    const btnFilters = this.controlsEl.createEl("button", { text: "Filters", cls: "mobile-only" });
+    const btnFilters = this.controlsEl.createEl("button", { 
+      text: "⚙️", 
+      cls: "mobile-only",
+      title: "Toggle Filters",
+      attr: { "data-tooltip": "Toggle Filters" }
+    });
     btnFilters.setAttr("aria-expanded", "true");
     btnFilters.addEventListener("click", () => {
       const hidden = this.coTagsEl.classList.toggle("is-hidden");
@@ -239,7 +262,9 @@ export class FacetNavigatorView extends ItemView {
     this.expansionManager.clear();
     // Update toggle button to reflect collapsed state
     if (this.btnToggleExpansion) {
-      this.btnToggleExpansion.textContent = "Expand All";
+      this.btnToggleExpansion.textContent = "📂";
+      this.btnToggleExpansion.setAttribute("title", "Expand All");
+      this.btnToggleExpansion.setAttribute("data-tooltip", "Expand All");
     }
     this.refresh();
   }
@@ -778,8 +803,10 @@ export class FacetNavigatorView extends ItemView {
       this.expansionManager.expandAll();
     }
     
-    // Update button text
-    button.textContent = shouldCollapse ? "Expand All" : "Collapse All";
+    // Update button icon and tooltip
+    button.textContent = shouldCollapse ? "📁" : "📂";
+    button.setAttribute("title", shouldCollapse ? "Collapse All" : "Expand All");
+    button.setAttribute("data-tooltip", shouldCollapse ? "Collapse All" : "Expand All");
     
     // Re-render to apply changes
     this.renderCoTags();
